@@ -1,0 +1,1408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OTel Backend</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg:      #0f1117;
+      --surface: #1a1d27;
+      --border:  #2a2d40;
+      --accent:  #6366f1;
+      --cyan:    #22d3ee;
+      --text:    #e2e8f0;
+      --muted:   #64748b;
+      --green:   #22c55e;
+      --yellow:  #eab308;
+      --red:     #ef4444;
+      --orange:  #f97316;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; min-height: 100vh; }
+
+    /* ── Header ── */
+    header {
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      padding: 0 24px; display: flex; align-items: center; gap: 20px; height: 56px;
+      position: sticky; top: 0; z-index: 100;
+    }
+    .logo { font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
+    .logo span { color: var(--accent); }
+    .logo em { color: var(--cyan); font-style: normal; }
+
+    nav { display: flex; gap: 2px; }
+    nav button {
+      background: none; border: none; color: var(--muted);
+      padding: 7px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500;
+      transition: background .15s, color .15s;
+    }
+    nav button:hover { background: rgba(255,255,255,.06); color: var(--text); }
+    nav button.active { background: var(--accent); color: #fff; }
+
+    .hdr-right { margin-left: auto; display: flex; align-items: center; gap: 14px; color: var(--muted); font-size: 12px; }
+    .hdr-right label { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+    .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); animation: blink 2s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* ── Layout ── */
+    main { padding: 24px; max-width: 1440px; margin: 0 auto; }
+    .tab { display: none; } .tab.active { display: block; }
+
+    /* ── Filters ── */
+    .filters { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; align-items: flex-end; }
+    .filters label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+    .filters input, .filters select {
+      background: var(--surface); border: 1px solid var(--border); color: var(--text);
+      padding: 7px 10px; border-radius: 6px; font-size: 13px; min-width: 160px;
+      transition: border-color .15s;
+    }
+    .filters input:focus, .filters select:focus { outline: none; border-color: var(--accent); }
+    .filters button {
+      background: var(--accent); border: none; color: #fff;
+      padding: 8px 18px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500;
+      align-self: flex-end; transition: opacity .15s;
+    }
+    .filters button:hover { opacity: .85; }
+
+    /* ── Stats row ── */
+    .stats { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; }
+    .stat {
+      background: var(--surface); border: 1px solid var(--border);
+      padding: 14px 20px; border-radius: 8px; min-width: 110px;
+    }
+    .stat .val { font-size: 22px; font-weight: 700; color: var(--cyan); }
+    .stat .lbl { font-size: 11px; color: var(--muted); margin-top: 3px; text-transform: uppercase; letter-spacing: .05em; }
+
+    /* ── Card / Table ── */
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    table { width: 100%; border-collapse: collapse; }
+    thead tr { background: rgba(255,255,255,.025); }
+    th {
+      text-align: left; padding: 9px 14px; font-size: 11px; font-weight: 600;
+      color: var(--muted); text-transform: uppercase; letter-spacing: .06em;
+      border-bottom: 1px solid var(--border);
+    }
+    td { padding: 9px 14px; border-bottom: 1px solid rgba(255,255,255,.04); vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,.02); }
+    tr.clickable { cursor: pointer; }
+    tr.clickable:hover td { background: rgba(99,102,241,.08); }
+
+    .mono { font-family: 'Cascadia Code', 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
+    .trunc { max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+    .dur { color: var(--cyan); font-weight: 600; }
+    .dim { color: var(--muted); font-size: 11px; }
+
+    /* ── Badges ── */
+    .badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .b-ok    { background: rgba(34,197,94,.15);  color: var(--green); }
+    .b-err   { background: rgba(239,68,68,.15);  color: var(--red); }
+    .b-warn  { background: rgba(234,179,8,.15);  color: var(--yellow); }
+    .b-info  { background: rgba(99,102,241,.15); color: var(--accent); }
+    .b-debug { background: rgba(100,116,139,.12); color: var(--muted); }
+    .b-high  { background: rgba(239,68,68,.2);   color: var(--red); font-size: 13px; }
+    .b-med   { background: rgba(249,115,22,.15); color: var(--orange); font-size: 13px; }
+    .b-low   { background: rgba(234,179,8,.12);  color: var(--yellow); font-size: 13px; }
+
+    /* ── Chart ── */
+    .chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+    .chart-title { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 14px; }
+    .chart-wrap  { height: 240px; position: relative; }
+
+    .empty { text-align: center; padding: 40px; color: var(--muted); }
+
+    /* ── Trace Detail Modal ── */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0; z-index: 200;
+      background: rgba(0,0,0,.7); backdrop-filter: blur(4px);
+      align-items: flex-start; justify-content: center; padding: 24px;
+      overflow-y: auto;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; width: 100%; max-width: 1200px;
+      box-shadow: 0 24px 80px rgba(0,0,0,.6);
+      animation: modalIn .18s ease;
+    }
+    @keyframes modalIn { from { opacity:0; transform: translateY(-12px); } }
+
+    .modal-hdr {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      padding: 20px 24px; border-bottom: 1px solid var(--border); gap: 16px;
+    }
+    .modal-hdr h2 { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+    .modal-meta { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; color: var(--muted); }
+    .modal-meta strong { color: var(--text); }
+    .modal-close {
+      background: none; border: 1px solid var(--border); color: var(--muted);
+      width: 30px; height: 30px; border-radius: 6px; cursor: pointer; font-size: 16px;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+      transition: background .15s;
+    }
+    .modal-close:hover { background: rgba(255,255,255,.06); color: var(--text); }
+
+    /* ── Waterfall ── */
+    .waterfall { overflow-x: auto; }
+    .wf-row {
+      display: flex; align-items: center;
+      border-bottom: 1px solid rgba(255,255,255,.04);
+      min-height: 34px;
+    }
+    .wf-row:last-child { border-bottom: none; }
+    .wf-row:hover { background: rgba(255,255,255,.02); }
+    .wf-row.wf-root > .wf-label { font-weight: 600; }
+
+    .wf-label {
+      flex: 0 0 42%; padding: 6px 14px; display: flex; align-items: center;
+      gap: 0; overflow: hidden; border-right: 1px solid var(--border);
+      min-width: 0;
+    }
+    .wf-indent { flex-shrink: 0; }
+    .wf-connector { flex-shrink: 0; color: var(--border); font-size: 11px; margin-right: 4px; }
+    .wf-name {
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      font-size: 12px; font-family: 'Cascadia Code', 'SF Mono', monospace;
+    }
+
+    .wf-timeline {
+      flex: 1 1 58%; position: relative; height: 34px;
+      display: flex; align-items: center; padding: 0 10px;
+      overflow: hidden;
+    }
+    /* tick lines */
+    .wf-ticks {
+      position: absolute; inset: 0; display: flex; pointer-events: none;
+    }
+    .wf-tick {
+      position: absolute; top: 0; bottom: 0;
+      border-left: 1px dashed rgba(255,255,255,.05);
+    }
+    .wf-bar-wrap { position: absolute; top: 8px; bottom: 8px; }
+    .wf-bar {
+      height: 100%; border-radius: 3px; min-width: 3px;
+      opacity: .85; transition: opacity .1s;
+    }
+    .wf-row:hover .wf-bar { opacity: 1; }
+    .wf-dur {
+      position: absolute; left: calc(100% + 4px); top: 50%; transform: translateY(-50%);
+      font-size: 10px; color: var(--muted); white-space: nowrap; font-family: monospace;
+    }
+
+    /* Span kind colors */
+    .bar-server   { background: var(--green); }
+    .bar-client   { background: var(--accent); }
+    .bar-internal { background: var(--muted); }
+    .bar-producer { background: var(--orange); }
+    .bar-consumer { background: var(--yellow); }
+    .bar-error    { background: var(--red) !important; }
+
+    /* ── Correlation panel ── */
+    .corr-panel {
+      border-top: 1px solid var(--border);
+      background: rgba(0,0,0,.15);
+    }
+    .corr-tabs {
+      display: flex; gap: 0; border-bottom: 1px solid var(--border);
+    }
+    .corr-tab {
+      padding: 10px 20px; font-size: 12px; font-weight: 600; cursor: pointer;
+      color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px;
+      transition: color .15s;
+      background: none; border-top: none; border-left: none; border-right: none;
+      display: flex; align-items: center; gap: 7px;
+    }
+    .corr-tab:hover { color: var(--text); }
+    .corr-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .corr-tab .corr-count {
+      background: var(--border); color: var(--muted);
+      padding: 1px 6px; border-radius: 10px; font-size: 10px;
+    }
+    .corr-tab.active .corr-count { background: rgba(99,102,241,.25); color: var(--accent); }
+    .corr-tab .corr-err-dot {
+      width: 6px; height: 6px; border-radius: 50%; background: var(--red);
+    }
+    .corr-body { padding: 0; max-height: 300px; overflow-y: auto; }
+    .corr-pane { display: none; }
+    .corr-pane.active { display: block; }
+    .corr-empty { padding: 24px; text-align: center; color: var(--muted); font-size: 13px; }
+
+    /* Tick header */
+    .wf-header {
+      display: flex; border-bottom: 1px solid var(--border);
+      font-size: 10px; color: var(--muted); font-family: monospace;
+      background: rgba(255,255,255,.015);
+    }
+    .wf-header-label { flex: 0 0 42%; padding: 5px 14px; border-right: 1px solid var(--border); }
+    .wf-header-ticks { flex: 1 1 58%; position: relative; height: 24px; }
+    .wf-header-tick {
+      position: absolute; top: 0; bottom: 0;
+      border-left: 1px dashed rgba(255,255,255,.1);
+      padding-left: 3px; display: flex; align-items: center;
+      font-size: 10px; color: var(--muted);
+    }
+
+    /* Legend */
+    .wf-legend {
+      display: flex; flex-wrap: wrap; gap: 12px;
+      padding: 12px 16px; border-top: 1px solid var(--border);
+      font-size: 11px; color: var(--muted);
+    }
+    .wf-legend-item { display: flex; align-items: center; gap: 5px; }
+    .wf-legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+
+    /* Span detail expand */
+    .wf-row { cursor: pointer; }
+    .wf-row.expanded { background: rgba(99,102,241,.06); }
+    .wf-detail {
+      display: none; background: rgba(0,0,0,.25);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 20px; gap: 20px;
+    }
+    .wf-detail.open { display: grid; grid-template-columns: 1fr 1fr; }
+    .wf-detail-col h4 {
+      font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--muted); margin-bottom: 10px; font-weight: 600;
+    }
+    .wf-attr-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .wf-attr-table tr { border-bottom: 1px solid rgba(255,255,255,.04); }
+    .wf-attr-table tr:last-child { border-bottom: none; }
+    .wf-attr-table td { padding: 4px 6px; vertical-align: top; }
+    .wf-attr-key { color: var(--cyan); font-family: monospace; white-space: nowrap; width: 1%; padding-right: 14px !important; }
+    .wf-attr-val { color: var(--text); font-family: monospace; word-break: break-all; }
+    .wf-meta-grid {
+      display: grid; grid-template-columns: auto 1fr; gap: 4px 14px;
+      font-size: 12px; margin-bottom: 12px;
+    }
+    .wf-meta-k { color: var(--muted); white-space: nowrap; }
+    .wf-meta-v { font-family: monospace; color: var(--text); word-break: break-all; }
+
+    /* ── Services / Entity Map ── */
+    .svc-layout { display: grid; grid-template-columns: 1fr 380px; gap: 16px; align-items: start; }
+    .svc-map-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0; overflow: hidden; }
+    .svc-map-title { padding: 12px 16px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .svc-map-svg { display: block; width: 100%; background: rgba(0,0,0,.15); }
+    .svc-node { cursor: pointer; }
+    .svc-node circle { transition: r .15s, stroke .15s; }
+    .svc-node:hover circle { stroke-width: 2.5; }
+    .svc-node text { pointer-events: none; font-size: 11px; fill: #e2e8f0; font-family: 'Segoe UI', system-ui, sans-serif; }
+    .svc-edge { pointer-events: none; }
+
+    .svc-detail-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+      position: sticky; top: 72px;
+    }
+    .svc-detail-hdr { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .svc-detail-hdr h3 { font-size: 14px; font-weight: 600; }
+    .svc-detail-hdr .dim { font-size: 11px; }
+    .svc-signals-tabs { display: flex; border-bottom: 1px solid var(--border); }
+    .svc-sig-tab { padding: 8px 16px; font-size: 12px; font-weight: 600; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; border-top: none; border-left: none; border-right: none; transition: color .15s; }
+    .svc-sig-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .svc-sig-body { max-height: 480px; overflow-y: auto; }
+    .svc-sig-pane { display: none; }
+    .svc-sig-pane.active { display: block; }
+    .svc-empty { padding: 24px; text-align: center; color: var(--muted); font-size: 12px; }
+
+    .svc-list { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo"><span>OTel</span><em>Backend</em></div>
+  <nav>
+    <button class="active" onclick="switchTab('traces',this)">Traces</button>
+    <button onclick="switchTab('metrics',this)">Metrics</button>
+    <button onclick="switchTab('logs',this)">Logs</button>
+    <button onclick="switchTab('anomalies',this)">Anomalies</button>
+    <button onclick="switchTab('services',this)">Services</button>
+  </nav>
+  <div class="hdr-right">
+    <span id="last-refresh">—</span>
+    <label><input type="checkbox" id="auto-refresh" checked> Auto-refresh (5s)</label>
+    <div class="live-dot" id="live-dot"></div>
+  </div>
+</header>
+
+<!-- ══ TRACE DETAIL MODAL ════════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="trace-modal" onclick="handleOverlayClick(event)">
+  <div class="modal">
+    <div class="modal-hdr">
+      <div>
+        <h2>Trace Detail</h2>
+        <div class="modal-meta" id="modal-meta">Loading…</div>
+      </div>
+      <button class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="waterfall" id="waterfall-container">
+      <div class="empty">Loading spans…</div>
+    </div>
+    <div class="wf-legend">
+      <span style="font-size:11px;color:var(--muted);margin-right:4px">Span kind:</span>
+      <div class="wf-legend-item"><div class="wf-legend-dot" style="background:var(--green)"></div>SERVER</div>
+      <div class="wf-legend-item"><div class="wf-legend-dot" style="background:var(--accent)"></div>CLIENT</div>
+      <div class="wf-legend-item"><div class="wf-legend-dot" style="background:var(--muted)"></div>INTERNAL</div>
+      <div class="wf-legend-item"><div class="wf-legend-dot" style="background:var(--orange)"></div>PRODUCER</div>
+      <div class="wf-legend-item"><div class="wf-legend-dot" style="background:var(--yellow)"></div>CONSUMER</div>
+      <div class="wf-legend-item"><div class="wf-legend-dot" style="background:var(--red)"></div>ERROR</div>
+    </div>
+
+    <!-- ── Correlation panel ── -->
+    <div class="corr-panel">
+      <div class="corr-tabs">
+        <button class="corr-tab active" onclick="switchCorrTab('logs',this)">
+          Related Logs
+          <span class="corr-count" id="corr-log-count">—</span>
+          <span class="corr-err-dot" id="corr-log-err" style="display:none"></span>
+        </button>
+        <button class="corr-tab" onclick="switchCorrTab('metrics',this)">
+          Related Metrics
+          <span class="corr-count" id="corr-metric-count">—</span>
+        </button>
+        <span style="margin-left:auto;padding:10px 16px;font-size:11px;color:var(--muted)" id="corr-note"></span>
+      </div>
+      <div class="corr-body">
+        <div class="corr-pane active" id="corr-logs-pane">
+          <div class="corr-empty">Loading…</div>
+        </div>
+        <div class="corr-pane" id="corr-metrics-pane">
+          <div class="corr-empty">Loading…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<main>
+
+<!-- ══ TRACES ══════════════════════════════════════════════════════════════ -->
+<div class="tab active" id="tab-traces">
+  <div class="filters">
+    <label>Trace ID<input id="f-trace-id" placeholder="e.g. 8ef696…"></label>
+    <label>Span Name<input id="f-span-name" placeholder="GET /owners"></label>
+    <label>Limit<input id="f-span-limit" type="number" value="100" style="min-width:80px"></label>
+    <button onclick="loadTraces()">Apply</button>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="val" id="s-span-count">—</div><div class="lbl">Spans</div></div>
+    <div class="stat"><div class="val" id="s-span-avg">—</div><div class="lbl">Avg Duration</div></div>
+    <div class="stat"><div class="val" id="s-span-p99">—</div><div class="lbl">P99 Duration</div></div>
+    <div class="stat"><div class="val" id="s-span-err">—</div><div class="lbl">Error Rate</div></div>
+    <div class="stat"><div class="val" id="s-span-traces">—</div><div class="lbl">Unique Traces</div></div>
+  </div>
+  <div class="card">
+    <table>
+      <thead><tr>
+        <th>Root Span</th><th>Service</th><th>Environment</th><th>Spans</th><th>Duration</th><th>Status</th><th>Trace ID</th><th>Started</th>
+      </tr></thead>
+      <tbody id="traces-body"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ══ METRICS ═════════════════════════════════════════════════════════════ -->
+<div class="tab" id="tab-metrics">
+  <div class="filters">
+    <label>Metric Name<input id="f-metric-name" placeholder="jvm.* or http.*"></label>
+    <label>Limit<input id="f-metric-limit" type="number" value="300" style="min-width:80px"></label>
+    <button onclick="loadMetrics()">Apply</button>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="val" id="s-metric-count">—</div><div class="lbl">Data Points</div></div>
+    <div class="stat"><div class="val" id="s-metric-series">—</div><div class="lbl">Unique Series</div></div>
+  </div>
+  <div class="chart-card">
+    <div class="chart-title">Top 5 Series — Last 30 Points</div>
+    <div class="chart-wrap"><canvas id="metrics-chart"></canvas></div>
+  </div>
+  <div class="card">
+    <table>
+      <thead><tr>
+        <th>Name</th><th>Type</th><th>Value</th><th>Unit</th><th>Time</th>
+      </tr></thead>
+      <tbody id="metrics-body"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ══ LOGS ════════════════════════════════════════════════════════════════ -->
+<div class="tab" id="tab-logs">
+  <div class="filters">
+    <label>Severity
+      <select id="f-log-sev">
+        <option value="">All</option>
+        <option>TRACE</option><option>DEBUG</option><option>INFO</option>
+        <option>WARN</option><option>ERROR</option><option>FATAL</option>
+      </select>
+    </label>
+    <label>Service<input id="f-log-service" placeholder="entity filter" list="log-svc-list"><datalist id="log-svc-list"></datalist></label>
+    <label>Trace ID<input id="f-log-trace" placeholder="optional"></label>
+    <label>Limit<input id="f-log-limit" type="number" value="100" style="min-width:80px"></label>
+    <button onclick="loadLogs()">Apply</button>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="val" id="s-log-count">—</div><div class="lbl">Lines</div></div>
+    <div class="stat"><div class="val" id="s-log-errors" style="color:var(--red)">—</div><div class="lbl">Errors</div></div>
+    <div class="stat"><div class="val" id="s-log-warns" style="color:var(--yellow)">—</div><div class="lbl">Warnings</div></div>
+    <div class="stat"><div class="val" id="s-log-infos">—</div><div class="lbl">Info</div></div>
+  </div>
+  <div class="card">
+    <table>
+      <thead><tr>
+        <th>Time</th><th>Severity</th><th>Service</th><th>Message</th><th>Trace ID</th>
+      </tr></thead>
+      <tbody id="logs-body"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ══ ANOMALIES ═══════════════════════════════════════════════════════════ -->
+<div class="tab" id="tab-anomalies">
+  <div class="filters">
+    <label>Limit<input id="f-anom-limit" type="number" value="50" style="min-width:80px"></label>
+    <button onclick="loadAnomalies()">Apply</button>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="val" id="s-anom-count">—</div><div class="lbl">Detected</div></div>
+    <div class="stat"><div class="val" id="s-anom-high" style="color:var(--red)">—</div><div class="lbl">High (score ≥10)</div></div>
+    <div class="stat"><div class="val" id="s-anom-med" style="color:var(--orange)">—</div><div class="lbl">Medium (5–10)</div></div>
+  </div>
+  <div class="card">
+    <table>
+      <thead><tr>
+        <th>Metric</th><th>Value</th><th>Score</th><th>Mean</th><th>StdDev</th><th>Algorithm</th><th>Detected At</th>
+      </tr></thead>
+      <tbody id="anomalies-body"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ══ SERVICES ════════════════════════════════════════════════════════════ -->
+<div class="tab" id="tab-services">
+  <div class="stats" id="svc-stats">
+    <div class="stat"><div class="val" id="s-svc-count">—</div><div class="lbl">Services</div></div>
+    <div class="stat"><div class="val" id="s-svc-edges">—</div><div class="lbl">Dependencies</div></div>
+    <div class="stat"><div class="val" id="s-svc-errors" style="color:var(--red)">—</div><div class="lbl">Error Edges</div></div>
+  </div>
+
+  <div class="svc-layout">
+    <!-- Left: service map -->
+    <div>
+      <div class="svc-map-card">
+        <div class="svc-map-title">
+          <span>Service Topology</span>
+          <span class="dim" id="svc-map-hint">Click a service to explore signals</span>
+        </div>
+        <svg class="svc-map-svg" id="svc-map-svg" viewBox="0 0 700 500" preserveAspectRatio="xMidYMid meet">
+          <g id="svc-edges-g"></g>
+          <g id="svc-nodes-g"></g>
+          <text x="350" y="260" text-anchor="middle" fill="#64748b" font-size="13" id="svc-map-empty">Loading service topology…</text>
+        </svg>
+      </div>
+
+      <!-- Service list below map -->
+      <div class="svc-list" style="margin-top:16px">
+        <table>
+          <thead><tr>
+            <th>Service</th><th>Last Seen</th><th>Inbound</th><th>Outbound</th><th>Actions</th>
+          </tr></thead>
+          <tbody id="svc-table-body"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Right: entity detail panel -->
+    <div class="svc-detail-card" id="svc-detail-card">
+      <div class="svc-detail-hdr">
+        <div>
+          <h3 id="svc-detail-name">Select a service</h3>
+          <div class="dim" id="svc-detail-meta">Click a node in the map or a row in the table</div>
+        </div>
+      </div>
+      <div id="svc-detail-body">
+        <div class="svc-empty">Select a service to view recent traces, metrics, and logs.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</main>
+
+<script>
+// ── Globals ────────────────────────────────────────────────────────────────
+let currentTab = 'traces';
+let metricsChart = null;
+let refreshTimer = null;
+const REFRESH_MS = 5000;
+
+// ── Tab switching ──────────────────────────────────────────────────────────
+function switchTab(tab, btn) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('nav button').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  btn.classList.add('active');
+  loadCurrent();
+}
+
+function loadCurrent() {
+  if (currentTab === 'traces')         loadTraces();
+  else if (currentTab === 'metrics')   loadMetrics();
+  else if (currentTab === 'logs')      loadLogs();
+  else if (currentTab === 'anomalies') loadAnomalies();
+  else if (currentTab === 'services')  loadServices();
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function fmtTime(ns) {
+  if (!ns) return '—';
+  const d = new Date(ns / 1e6);
+  return d.toLocaleTimeString('en-US', { hour12: false }) + '.' +
+         String(d.getMilliseconds()).padStart(3, '0');
+}
+
+function fmtDur(ms) {
+  if (ms == null) return '—';
+  if (ms >= 1000) return (ms / 1000).toFixed(2) + 's';
+  if (ms >= 1)    return ms.toFixed(1) + 'ms';
+  return (ms * 1000).toFixed(0) + 'µs';
+}
+
+function fmtVal(n) {
+  if (n == null) return '—';
+  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(3) + 'G';
+  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(3) + 'M';
+  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(3) + 'K';
+  return Number.isInteger(n) ? String(n) : n.toFixed(4);
+}
+
+const KINDS = ['UNSPECIFIED','INTERNAL','SERVER','CLIENT','PRODUCER','CONSUMER'];
+function kindLabel(k) { return KINDS[k] || String(k); }
+
+function statusBadge(code) {
+  return code === 2
+    ? '<span class="badge b-err">ERROR</span>'
+    : '<span class="badge b-ok">OK</span>';
+}
+
+function sevBadge(sev) {
+  const s = (sev || 'INFO').toUpperCase();
+  const cls = ['ERROR','FATAL'].includes(s) ? 'b-err'
+            : s === 'WARN'  ? 'b-warn'
+            : s === 'INFO'  ? 'b-info'
+            : 'b-debug';
+  return `<span class="badge ${cls}">${s}</span>`;
+}
+
+function esc(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function api(path) {
+  try {
+    const r = await fetch(path);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+// ── Traces ─────────────────────────────────────────────────────────────────
+async function loadTraces() {
+  const p = new URLSearchParams({ limit: document.getElementById('f-span-limit').value || 200 });
+  const tid  = document.getElementById('f-trace-id').value.trim();
+  const name = document.getElementById('f-span-name').value.trim();
+  if (tid)  p.set('trace_id', tid);
+  if (name) p.set('name', name);
+
+  const res = await api('/v1/query/spans?' + p);
+  const allSpans = res?.data || [];
+
+  // Group spans by trace_id
+  const traceMap = {};
+  allSpans.forEach(s => {
+    if (!traceMap[s.trace_id]) traceMap[s.trace_id] = [];
+    traceMap[s.trace_id].push(s);
+  });
+
+  // Build one summary row per trace
+  const traces = Object.entries(traceMap).map(([tid, spans]) => {
+    const spanIds = new Set(spans.map(s => s.span_id));
+    // Root = span whose parent is not in this set (or no parent)
+    const root = spans.find(s => !s.parent_span_id || !spanIds.has(s.parent_span_id))
+                 || spans.reduce((a, b) => a.start_ns < b.start_ns ? a : b);
+    const traceStart = Math.min(...spans.map(s => s.start_ns));
+    const traceEnd   = Math.max(...spans.map(s => s.end_ns));
+    const durationMs = (traceEnd - traceStart) / 1e6;
+    const hasError   = spans.some(s => s.status_code === 2);
+
+    let resAttrs = {};
+    try { resAttrs = JSON.parse(root.resource_attrs || '{}'); } catch {}
+    const service = resAttrs['service.name'] || '—';
+    const env = resAttrs['deployment.environment']
+             || resAttrs['deployment.environment.name']
+             || resAttrs['env']
+             || '—';
+
+    return { traceId: tid, root, spans, traceStart, durationMs, hasError, service, env };
+  });
+
+  // Sort by most recent first
+  traces.sort((a, b) => b.traceStart - a.traceStart);
+
+  document.getElementById('s-span-count').textContent  = allSpans.length;
+  document.getElementById('s-span-traces').textContent = traces.length;
+
+  if (traces.length) {
+    const durs = traces.map(t => t.durationMs).sort((a, b) => a - b);
+    const avg  = durs.reduce((a, b) => a + b, 0) / durs.length;
+    const p99  = durs[Math.min(Math.floor(durs.length * 0.99), durs.length - 1)];
+    const errs = traces.filter(t => t.hasError).length;
+    document.getElementById('s-span-avg').textContent = fmtDur(avg);
+    document.getElementById('s-span-p99').textContent = fmtDur(p99);
+    document.getElementById('s-span-err').textContent = ((errs / traces.length) * 100).toFixed(1) + '%';
+  }
+
+  const tbody = document.getElementById('traces-body');
+  if (!traces.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">No traces yet — waiting for data…</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = traces.map(t => `
+    <tr class="clickable" onclick="openTrace('${esc(t.traceId)}')" title="Click to view waterfall">
+      <td>
+        <span class="mono trunc" title="${esc(t.root.name)}">${esc(t.root.name)}</span>
+        <span class="dim" style="margin-left:6px">${kindLabel(t.root.kind)}</span>
+      </td>
+      <td>${esc(t.service)}</td>
+      <td class="dim">${esc(t.env)}</td>
+      <td class="dim">${t.spans.length}</td>
+      <td class="dur mono">${fmtDur(t.durationMs)}</td>
+      <td>${t.hasError ? '<span class="badge b-err">ERROR</span>' : '<span class="badge b-ok">OK</span>'}</td>
+      <td class="mono dim">${t.traceId.slice(0, 16)}…</td>
+      <td class="mono dim">${fmtTime(t.traceStart)}</td>
+    </tr>
+  `).join('');
+}
+
+// ── Trace Detail Waterfall ─────────────────────────────────────────────────
+let wfSpanMap = {}; // span_id → span data, used by toggleSpanDetail
+
+async function openTrace(traceId) {
+  document.getElementById('trace-modal').classList.add('open');
+  document.getElementById('waterfall-container').innerHTML = '<div class="empty">Loading spans…</div>';
+  document.getElementById('modal-meta').textContent = 'Loading…';
+  wfSpanMap = {};
+
+  const res = await api('/v1/query/spans?trace_id=' + encodeURIComponent(traceId) + '&limit=1000');
+  const spans = res?.data || [];
+
+  if (!spans.length) {
+    document.getElementById('waterfall-container').innerHTML = '<div class="empty">No spans found for this trace.</div>';
+    return;
+  }
+
+  // Index spans
+  spans.forEach(s => { wfSpanMap[s.span_id] = s; });
+
+  // Build tree
+  const byId = {};
+  spans.forEach(s => { byId[s.span_id] = { ...s, children: [] }; });
+  const roots = [];
+  spans.forEach(s => {
+    const node = byId[s.span_id];
+    if (s.parent_span_id && byId[s.parent_span_id]) {
+      byId[s.parent_span_id].children.push(node);
+    } else {
+      roots.push(node);
+    }
+  });
+
+  function sortTree(nodes) {
+    nodes.sort((a, b) => a.start_ns - b.start_ns);
+    nodes.forEach(n => sortTree(n.children));
+  }
+  sortTree(roots);
+
+  function flatten(nodes, depth) {
+    const out = [];
+    for (const n of nodes) {
+      out.push({ span: n, depth });
+      out.push(...flatten(n.children, depth + 1));
+    }
+    return out;
+  }
+  const flat = flatten(roots, 0);
+
+  // Timeline bounds
+  const traceStart = Math.min(...spans.map(s => s.start_ns));
+  const traceEnd   = Math.max(...spans.map(s => s.end_ns));
+  const totalNs    = traceEnd - traceStart || 1;
+  const totalMs    = totalNs / 1e6;
+
+  // Service name
+  let serviceName = '—';
+  try { serviceName = JSON.parse(spans[0].resource_attrs || '{}')['service.name'] || '—'; } catch {}
+
+  document.getElementById('modal-meta').innerHTML = `
+    <span>Trace: <strong class="mono">${traceId.slice(0,24)}…</strong></span>
+    <span>Service: <strong>${esc(serviceName)}</strong></span>
+    <span>Spans: <strong>${spans.length}</strong></span>
+    <span>Duration: <strong class="dur">${fmtDur(totalMs)}</strong></span>
+    <span>Start: <strong>${fmtTime(traceStart)}</strong></span>
+  `;
+
+  // Tick marks
+  const TICKS = 4;
+  const ticksHtml = Array.from({ length: TICKS + 1 }, (_, i) => {
+    const pct = (i / TICKS) * 100;
+    return `<div class="wf-header-tick" style="left:${pct}%">${fmtDur(totalMs * i / TICKS)}</div>`;
+  }).join('');
+
+  const ticksBg = Array.from({ length: TICKS + 1 }, (_, i) =>
+    `<div class="wf-tick" style="left:${(i / TICKS) * 100}%"></div>`
+  ).join('');
+
+  const KIND_CLASS = ['bar-internal','bar-internal','bar-server','bar-client','bar-producer','bar-consumer'];
+
+  const rowsHtml = flat.map(({ span: s, depth }) => {
+    const offsetPct = ((s.start_ns - traceStart) / totalNs) * 100;
+    const widthPct  = Math.max((s.duration_ms / totalMs) * 100, 0.2);
+    const isError   = s.status_code === 2;
+    const barClass  = isError ? 'bar-error' : (KIND_CLASS[s.kind] || 'bar-internal');
+    const isRoot    = depth === 0 ? ' wf-root' : '';
+    const indent    = depth * 16;
+    const connector = depth > 0 ? '└ ' : '';
+    const sid       = esc(s.span_id);
+
+    return `
+      <div class="wf-row${isRoot}" onclick="toggleSpanDetail('${sid}')" id="wfrow-${sid}">
+        <div class="wf-label" title="${esc(s.name)} | ${kindLabel(s.kind)} | ${fmtDur(s.duration_ms)}${isError ? ' | ERROR' : ''}">
+          <span class="wf-indent" style="width:${indent}px;min-width:${indent}px"></span>
+          <span class="wf-connector">${connector}</span>
+          <span class="wf-name">${esc(s.name)}</span>
+          ${isError ? '<span class="badge b-err" style="margin-left:6px;flex-shrink:0">ERR</span>' : ''}
+        </div>
+        <div class="wf-timeline">
+          <div class="wf-ticks">${ticksBg}</div>
+          <div class="wf-bar-wrap" style="left:${offsetPct}%;width:${widthPct}%">
+            <div class="wf-bar ${barClass}"></div>
+            <span class="wf-dur">${fmtDur(s.duration_ms)}</span>
+          </div>
+        </div>
+      </div>
+      <div class="wf-detail" id="wfdetail-${sid}"></div>
+    `;
+  }).join('');
+
+  document.getElementById('waterfall-container').innerHTML = `
+    <div class="wf-header">
+      <div class="wf-header-label">Span (click to expand attributes)</div>
+      <div class="wf-header-ticks">${ticksHtml}</div>
+    </div>
+    ${rowsHtml}
+  `;
+
+  // Reset correlation tabs
+  document.querySelectorAll('.corr-tab').forEach((t, i) => t.classList.toggle('active', i === 0));
+  document.querySelectorAll('.corr-pane').forEach((p, i) => p.classList.toggle('active', i === 0));
+  document.getElementById('corr-logs-pane').innerHTML  = '<div class="corr-empty">Loading…</div>';
+  document.getElementById('corr-metrics-pane').innerHTML = '<div class="corr-empty">Loading…</div>';
+  document.getElementById('corr-log-count').textContent = '—';
+  document.getElementById('corr-metric-count').textContent = '—';
+
+  loadCorrelation(traceId, traceStart, traceEnd, serviceName);
+}
+
+function toggleSpanDetail(spanId) {
+  const row    = document.getElementById('wfrow-' + spanId);
+  const detail = document.getElementById('wfdetail-' + spanId);
+  const isOpen = detail.classList.contains('open');
+
+  // Close all others
+  document.querySelectorAll('.wf-detail.open').forEach(el => {
+    el.classList.remove('open');
+    el.previousElementSibling?.classList.remove('expanded');
+  });
+
+  if (isOpen) return; // was open → just close
+
+  const s = wfSpanMap[spanId];
+  if (!s) return;
+
+  // Parse attrs
+  let spanAttrs = {}, resAttrs = {};
+  try { spanAttrs = JSON.parse(s.span_attrs || '{}'); } catch {}
+  try { resAttrs  = JSON.parse(s.resource_attrs || '{}'); } catch {}
+
+  const renderAttrs = (obj) => {
+    const entries = Object.entries(obj);
+    if (!entries.length) return '<div style="color:var(--muted);font-size:12px">—</div>';
+    return `<table class="wf-attr-table">${
+      entries.map(([k, v]) => `
+        <tr>
+          <td class="wf-attr-key">${esc(k)}</td>
+          <td class="wf-attr-val">${esc(typeof v === 'object' ? JSON.stringify(v) : String(v))}</td>
+        </tr>
+      `).join('')
+    }</table>`;
+  };
+
+  const STATUS_LABEL = ['UNSET','OK','ERROR'];
+
+  detail.innerHTML = `
+    <div class="wf-detail-col">
+      <h4>Span Info</h4>
+      <div class="wf-meta-grid">
+        <span class="wf-meta-k">Span ID</span>     <span class="wf-meta-v">${esc(s.span_id)}</span>
+        <span class="wf-meta-k">Parent ID</span>   <span class="wf-meta-v">${s.parent_span_id ? esc(s.parent_span_id) : '<span style="color:var(--muted)">root span</span>'}</span>
+        <span class="wf-meta-k">Kind</span>         <span class="wf-meta-v">${kindLabel(s.kind)}</span>
+        <span class="wf-meta-k">Status</span>       <span class="wf-meta-v">${s.status_code === 2 ? '<span style="color:var(--red)">ERROR</span>' : '<span style="color:var(--green)">OK</span>'}${s.status_msg ? ' — ' + esc(s.status_msg) : ''}</span>
+        <span class="wf-meta-k">Duration</span>     <span class="wf-meta-v" style="color:var(--cyan)">${fmtDur(s.duration_ms)}</span>
+        <span class="wf-meta-k">Start</span>        <span class="wf-meta-v">${fmtTime(s.start_ns)}</span>
+        <span class="wf-meta-k">End</span>          <span class="wf-meta-v">${fmtTime(s.end_ns)}</span>
+      </div>
+      <h4>Span Attributes</h4>
+      ${renderAttrs(spanAttrs)}
+    </div>
+    <div class="wf-detail-col">
+      <h4>Resource Attributes</h4>
+      ${renderAttrs(resAttrs)}
+    </div>
+  `;
+
+  detail.classList.add('open');
+  row.classList.add('expanded');
+}
+
+// ── Correlation panel ──────────────────────────────────────────────────────
+function switchCorrTab(name, btn) {
+  document.querySelectorAll('.corr-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.corr-pane').forEach(p => p.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('corr-' + name + '-pane').classList.add('active');
+}
+
+async function loadCorrelation(traceId, traceStart, traceEnd, serviceName) {
+  const WINDOW_NS = 5 * 60 * 1e9;
+  const fromNs = traceStart - WINDOW_NS;
+  const toNs   = traceEnd   + WINDOW_NS;
+
+  document.getElementById('corr-note').textContent =
+    `Entity: ${serviceName} · Window: trace ±5 min`;
+
+  // ── Related Logs ─────────────────────────────────────────────────────
+  // Tier 1: exact trace_id match
+  const logRes    = await api('/v1/query/logs?trace_id=' + encodeURIComponent(traceId) + '&limit=200');
+  const exactLogs = logRes?.data || [];
+
+  // Tier 2: entity-based — server-side service filter + time window
+  const svcParam  = serviceName && serviceName !== '—' ? '&service=' + encodeURIComponent(serviceName) : '';
+  const logWinRes = await api(`/v1/query/logs?from=${fromNs}&to=${toNs}${svcParam}&limit=200`);
+  const exactIds  = new Set(exactLogs.map(l => l.span_id).filter(Boolean));
+  const windowLogs = (logWinRes?.data || []).filter(l => !exactIds.has(l.span_id));
+
+  const allLogs  = [...exactLogs, ...windowLogs];
+  const errLogs  = allLogs.filter(l => ['ERROR','FATAL'].includes((l.severity||'').toUpperCase()));
+
+  document.getElementById('corr-log-count').textContent = allLogs.length;
+  document.getElementById('corr-log-err').style.display = errLogs.length ? 'block' : 'none';
+
+  const renderLogTable = (rows, label, labelColor) => {
+    if (!rows.length) return '';
+    return `
+      <div style="padding:6px 14px 4px;font-size:11px;font-weight:600;color:${labelColor};background:rgba(0,0,0,.15);border-bottom:1px solid var(--border)">
+        ${label}
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        <tbody>
+          ${rows.map(l => `
+            <tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+              <td style="padding:6px 14px;font-family:monospace;font-size:11px;color:var(--muted);white-space:nowrap;width:1%">${fmtTime(l.timestamp_ns)}</td>
+              <td style="padding:6px 14px;width:1%">${sevBadge(l.severity)}</td>
+              <td style="padding:6px 14px;font-family:monospace;font-size:11px;color:var(--muted);width:1%;white-space:nowrap">${l.span_id ? l.span_id.slice(0,10)+'…' : '—'}</td>
+              <td style="padding:6px 14px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0" title="${esc(l.body)}">${esc(l.body)||'—'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`;
+  };
+
+  const logPane = document.getElementById('corr-logs-pane');
+  if (!allLogs.length) {
+    logPane.innerHTML = `<div class="corr-empty">No logs found.<br>
+      <span style="font-size:11px;line-height:1.8">
+        Checked: trace_id match + <strong>${esc(serviceName)}</strong> logs within ±5 min.<br>
+        This service may not emit logs during request handling (common in lean microservices).<br>
+        Add explicit logging in the app code to see correlated log records here.
+      </span></div>`;
+  } else {
+    logPane.innerHTML =
+      renderLogTable(exactLogs,  `✦ Exact match — trace_id: ${traceId.slice(0,16)}…`, 'var(--cyan)') +
+      renderLogTable(windowLogs, `◎ Nearby — ${esc(serviceName)} ±5 min (no direct trace_id)`, 'var(--muted)');
+  }
+
+  // ── Related Metrics — entity-based: server-side service + time window ──
+  const mRes    = await api(`/v1/query/metrics?from=${fromNs}&to=${toNs}${svcParam}&limit=300`);
+  const metrics = mRes?.data || [];
+
+  document.getElementById('corr-metric-count').textContent = metrics.length;
+
+  const mPane = document.getElementById('corr-metrics-pane');
+  if (!metrics.length) {
+    mPane.innerHTML = `<div class="corr-empty">No metrics found for entity <strong>${esc(serviceName)}</strong> in the ±5 min window.</div>`;
+  } else {
+    // Group by metric name, show latest value + sparkline hint
+    const byName = {};
+    metrics.forEach(m => { (byName[m.name] = byName[m.name] || []).push(m); });
+    const rows = Object.entries(byName).map(([name, pts]) => {
+      const latest = pts[pts.length - 1];
+      const min = Math.min(...pts.map(p => p.value));
+      const max = Math.max(...pts.map(p => p.value));
+      return { name, latest, count: pts.length, min, max };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+
+    mPane.innerHTML = `
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:rgba(255,255,255,.025)">
+          <th style="padding:7px 14px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Metric</th>
+          <th style="padding:7px 14px;font-size:11px;color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">Type</th>
+          <th style="padding:7px 14px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Latest</th>
+          <th style="padding:7px 14px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Min</th>
+          <th style="padding:7px 14px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Max</th>
+          <th style="padding:7px 14px;font-size:11px;color:var(--muted);text-align:right;border-bottom:1px solid var(--border)">Points</th>
+        </tr></thead>
+        <tbody>
+          ${rows.map(r => `
+            <tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+              <td style="padding:6px 14px;font-family:monospace;font-size:11px;max-width:380px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(r.name)}">${esc(r.name)}</td>
+              <td style="padding:6px 14px"><span class="badge b-info">${esc(r.latest.type)}</span></td>
+              <td style="padding:6px 14px;font-family:monospace;font-size:12px;color:var(--cyan);text-align:right">${fmtVal(r.latest.value)}</td>
+              <td style="padding:6px 14px;font-family:monospace;font-size:11px;color:var(--muted);text-align:right">${fmtVal(r.min)}</td>
+              <td style="padding:6px 14px;font-family:monospace;font-size:11px;color:var(--muted);text-align:right">${fmtVal(r.max)}</td>
+              <td style="padding:6px 14px;font-size:11px;color:var(--muted);text-align:right">${r.count}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`;
+  }
+}
+
+function closeModal() {
+  document.getElementById('trace-modal').classList.remove('open');
+}
+
+function handleOverlayClick(e) {
+  if (e.target === document.getElementById('trace-modal')) closeModal();
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeModal();
+});
+
+// ── Metrics ────────────────────────────────────────────────────────────────
+async function loadMetrics() {
+  const p = new URLSearchParams({ limit: document.getElementById('f-metric-limit').value || 300 });
+  const name = document.getElementById('f-metric-name').value.trim();
+  if (name) p.set('name', name);
+
+  const res = await api('/v1/query/metrics?' + p);
+  const rows = res?.data || [];
+
+  const seriesMap = {};
+  rows.forEach(r => {
+    if (!seriesMap[r.name]) seriesMap[r.name] = [];
+    seriesMap[r.name].push(r);
+  });
+  const seriesNames = Object.keys(seriesMap);
+
+  document.getElementById('s-metric-count').textContent  = rows.length;
+  document.getElementById('s-metric-series').textContent = seriesNames.length;
+
+  const COLORS = ['#6366f1', '#22d3ee', '#22c55e', '#f97316', '#eab308'];
+  const top5 = seriesNames.sort((a, b) => seriesMap[b].length - seriesMap[a].length).slice(0, 5);
+
+  const datasets = top5.map((sname, i) => {
+    const pts = seriesMap[sname].slice(-30);
+    return {
+      label: sname.split('.').slice(-3).join('.'),
+      data: pts.map(p => p.value),
+      borderColor: COLORS[i],
+      backgroundColor: COLORS[i] + '25',
+      tension: 0.35,
+      pointRadius: 2,
+      fill: false,
+      _labels: pts.map(p => fmtTime(p.timestamp_ns)),
+    };
+  });
+
+  const labels = datasets[0]?._labels || [];
+  if (metricsChart) metricsChart.destroy();
+  const ctx = document.getElementById('metrics-chart').getContext('2d');
+  metricsChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: { ticks: { color: '#64748b', maxTicksLimit: 8 }, grid: { color: '#2a2d40' } },
+        y: { ticks: { color: '#64748b' }, grid: { color: '#2a2d40' } },
+      },
+      plugins: { legend: { labels: { color: '#e2e8f0', boxWidth: 10, padding: 16 } } },
+    },
+  });
+
+  const tbody = document.getElementById('metrics-body');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">No metrics yet…</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.slice(0, 200).map(r => `
+    <tr>
+      <td><span class="mono trunc" style="max-width:400px" title="${esc(r.name)}">${esc(r.name)}</span></td>
+      <td><span class="badge b-info">${esc(r.type)}</span></td>
+      <td class="dur mono">${fmtVal(r.value)}</td>
+      <td class="dim">${r.unit || '—'}</td>
+      <td class="mono dim">${fmtTime(r.timestamp_ns)}</td>
+    </tr>
+  `).join('');
+}
+
+// ── Logs ───────────────────────────────────────────────────────────────────
+async function loadLogs() {
+  const p = new URLSearchParams({ limit: document.getElementById('f-log-limit').value || 100 });
+  const sev = document.getElementById('f-log-sev').value;
+  const svc = document.getElementById('f-log-service').value.trim();
+  const tid = document.getElementById('f-log-trace').value.trim();
+  if (sev) p.set('severity', sev);
+  if (svc) p.set('service', svc);
+  if (tid) p.set('trace_id', tid);
+
+  // Populate service autocomplete from entity registry
+  api('/v1/entities?type=service').then(res => {
+    const dl = document.getElementById('log-svc-list');
+    if (dl && res?.data) {
+      dl.innerHTML = res.data.map(e => `<option value="${esc(e.entity_id)}">`).join('');
+    }
+  });
+
+  const res = await api('/v1/query/logs?' + p);
+  const rows = res?.data || [];
+
+  const errs  = rows.filter(r => ['ERROR','FATAL'].includes((r.severity||'').toUpperCase())).length;
+  const warns  = rows.filter(r => (r.severity||'').toUpperCase() === 'WARN').length;
+  const infos  = rows.filter(r => (r.severity||'').toUpperCase() === 'INFO').length;
+  document.getElementById('s-log-count').textContent  = rows.length;
+  document.getElementById('s-log-errors').textContent = errs;
+  document.getElementById('s-log-warns').textContent  = warns;
+  document.getElementById('s-log-infos').textContent  = infos;
+
+  const tbody = document.getElementById('logs-body');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">No logs yet…</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(r => {
+    let svcName = '—';
+    try { svcName = JSON.parse(r.resource_attrs||'{}')['service.name'] || '—'; } catch {}
+    return `
+    <tr>
+      <td class="mono dim" style="white-space:nowrap">${fmtTime(r.timestamp_ns)}</td>
+      <td>${sevBadge(r.severity)}</td>
+      <td><span class="mono dim" style="font-size:11px;cursor:pointer" onclick="document.getElementById('f-log-service').value='${esc(svcName)}';loadLogs()" title="Filter by this service">${esc(svcName)}</span></td>
+      <td class="trunc" style="max-width:500px" title="${esc(r.body)}">${esc(r.body) || '—'}</td>
+      <td class="mono dim">${r.trace_id ? r.trace_id.slice(0, 16) + '…' : '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Anomalies ──────────────────────────────────────────────────────────────
+async function loadAnomalies() {
+  const p = new URLSearchParams({ limit: document.getElementById('f-anom-limit').value || 50 });
+  const res = await api('/v1/query/anomalies?' + p);
+  const rows = res?.data || [];
+
+  const high = rows.filter(r => r.score >= 10).length;
+  const med  = rows.filter(r => r.score >= 5 && r.score < 10).length;
+  document.getElementById('s-anom-count').textContent = rows.length;
+  document.getElementById('s-anom-high').textContent  = high;
+  document.getElementById('s-anom-med').textContent   = med;
+
+  const tbody = document.getElementById('anomalies-body');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">No anomalies detected yet — data is still accumulating…</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(r => {
+    const cls = r.score >= 10 ? 'b-high' : r.score >= 5 ? 'b-med' : 'b-low';
+    return `
+    <tr>
+      <td class="mono trunc" style="max-width:320px" title="${esc(r.metric_name)}">${esc(r.metric_name)}</td>
+      <td class="mono">${fmtVal(r.value)}</td>
+      <td><span class="badge ${cls}">${r.score.toFixed(2)}</span></td>
+      <td class="mono dim">${fmtVal(r.mean)}</td>
+      <td class="mono dim">${fmtVal(r.stddev)}</td>
+      <td><span class="badge b-info">${esc(r.algorithm)}</span></td>
+      <td class="mono dim">${fmtTime(r.detected_at * 1e6)}</td>
+    </tr>
+  `;}).join('');
+}
+
+// ── Services / Entity Map ───────────────────────────────────────────────────
+let _svcEntities = [];
+let _svcEdges    = [];
+
+async function loadServices() {
+  const [entRes, topoRes] = await Promise.all([
+    api('/v1/entities?type=service'),
+    api('/v1/topology'),
+  ]);
+  _svcEntities = entRes?.data  || [];
+  _svcEdges    = topoRes?.data || [];
+
+  // Stats
+  const errEdges = _svcEdges.filter(e => e.call_count > 0 && e.error_count / e.call_count > 0.05).length;
+  document.getElementById('s-svc-count').textContent  = _svcEntities.length;
+  document.getElementById('s-svc-edges').textContent  = _svcEdges.length;
+  document.getElementById('s-svc-errors').textContent = errEdges;
+
+  renderServiceMap(_svcEntities, _svcEdges);
+  renderServiceTable(_svcEntities, _svcEdges);
+}
+
+function renderServiceMap(entities, edges) {
+  const W = 700, H = 500, CX = W / 2, CY = H / 2;
+  const emptyEl = document.getElementById('svc-map-empty');
+
+  if (!entities.length) {
+    document.getElementById('svc-edges-g').innerHTML = '';
+    document.getElementById('svc-nodes-g').innerHTML = '';
+    emptyEl.textContent = 'No services discovered yet — waiting for traces…';
+    emptyEl.style.display = '';
+    return;
+  }
+  emptyEl.style.display = 'none';
+
+  // Position nodes on a circle (or grid for few/many nodes)
+  const n = entities.length;
+  const R = Math.min(180, Math.max(120, n * 22)); // ring radius
+  const positions = {};
+  entities.forEach((e, i) => {
+    const angle = (2 * Math.PI * i / n) - Math.PI / 2;
+    positions[e.entity_id] = {
+      x: CX + R * Math.cos(angle),
+      y: CY + R * Math.sin(angle),
+    };
+  });
+
+  // Build edge index for error rate coloring
+  const edgeMap = {};
+  edges.forEach(e => {
+    edgeMap[e.source_service + '→' + e.target_service] = e;
+  });
+
+  // Render edges first
+  let edgesHtml = '';
+  edges.forEach(e => {
+    const src = positions[e.source_service];
+    const dst = positions[e.target_service];
+    if (!src || !dst) return;
+
+    const errRate = e.call_count > 0 ? e.error_count / e.call_count : 0;
+    const color = errRate > 0.1 ? '#ef4444' : errRate > 0.02 ? '#f97316' : '#22c55e';
+    const opacity = Math.min(0.9, 0.4 + (e.call_count / 100) * 0.5);
+
+    // Draw line with arrow marker
+    const dx = dst.x - src.x, dy = dst.y - src.y;
+    const len = Math.sqrt(dx*dx + dy*dy) || 1;
+    const nx = dx/len, ny = dy/len;
+    const nodeR = 24;
+    const x1 = src.x + nx * nodeR, y1 = src.y + ny * nodeR;
+    const x2 = dst.x - nx * (nodeR + 8), y2 = dst.y - ny * (nodeR + 8);
+
+    // Midpoint label
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    const calls = e.call_count >= 1000 ? (e.call_count/1000).toFixed(1)+'k' : String(e.call_count);
+
+    edgesHtml += `
+      <g class="svc-edge">
+        <line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"
+          stroke="${color}" stroke-width="1.5" stroke-opacity="${opacity}"
+          marker-end="url(#arrow-${color === '#ef4444' ? 'red' : color === '#f97316' ? 'orange' : 'green'})"/>
+        <text x="${mx.toFixed(1)}" y="${(my - 4).toFixed(1)}" text-anchor="middle"
+          font-size="9" fill="${color}" fill-opacity="0.8">${calls}</text>
+      </g>`;
+  });
+
+  // Render nodes
+  let nodesHtml = '';
+  entities.forEach(e => {
+    const pos = positions[e.entity_id];
+    if (!pos) return;
+    const label = e.entity_id.replace('spring-petclinic-', '').slice(0, 18);
+    const isActive = new Date() - new Date(e.last_seen_ns / 1e6) < 5 * 60 * 1000; // seen in last 5 min
+    const nodeColor = isActive ? '#6366f1' : '#374151';
+    const strokeColor = isActive ? '#818cf8' : '#4b5563';
+
+    nodesHtml += `
+      <g class="svc-node" onclick="selectService('${esc(e.entity_id)}')" id="svcnode-${esc(e.entity_id)}">
+        <circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="24"
+          fill="${nodeColor}" stroke="${strokeColor}" stroke-width="1.5"/>
+        <text x="${pos.x.toFixed(1)}" y="${(pos.y - 2).toFixed(1)}" text-anchor="middle" dominant-baseline="middle"
+          style="font-size:10px;font-weight:600">${esc(label)}</text>
+      </g>`;
+  });
+
+  document.getElementById('svc-edges-g').innerHTML = `
+    <defs>
+      <marker id="arrow-green"  markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 Z" fill="#22c55e"/></marker>
+      <marker id="arrow-orange" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 Z" fill="#f97316"/></marker>
+      <marker id="arrow-red"    markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 Z" fill="#ef4444"/></marker>
+    </defs>
+    ${edgesHtml}`;
+  document.getElementById('svc-nodes-g').innerHTML = nodesHtml;
+}
+
+function renderServiceTable(entities, edges) {
+  const inbound  = {}, outbound = {};
+  edges.forEach(e => {
+    outbound[e.source_service] = (outbound[e.source_service] || 0) + 1;
+    inbound[e.target_service]  = (inbound[e.target_service]  || 0) + 1;
+  });
+
+  const tbody = document.getElementById('svc-table-body');
+  if (!entities.length) {
+    tbody.innerHTML = '<tr><td colspan="5" class="empty">No services discovered yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = entities.map(e => {
+    const lastSeen = e.last_seen_ns ? fmtTime(e.last_seen_ns) : '—';
+    return `<tr class="clickable" onclick="selectService('${esc(e.entity_id)}')">
+      <td><span class="mono">${esc(e.entity_id)}</span></td>
+      <td class="dim mono">${lastSeen}</td>
+      <td class="dim">${inbound[e.entity_id]  || 0}</td>
+      <td class="dim">${outbound[e.entity_id] || 0}</td>
+      <td><button onclick="event.stopPropagation();selectService('${esc(e.entity_id)}')"
+            style="background:none;border:1px solid var(--border);color:var(--accent);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px">
+          Inspect
+        </button></td>
+    </tr>`;
+  }).join('');
+}
+
+async function selectService(serviceId) {
+  // Highlight node
+  document.querySelectorAll('.svc-node circle').forEach(c => c.setAttribute('stroke-width','1.5'));
+  const node = document.getElementById('svcnode-' + serviceId);
+  if (node) node.querySelector('circle').setAttribute('stroke-width','3');
+
+  document.getElementById('svc-detail-name').textContent = serviceId;
+  document.getElementById('svc-detail-meta').textContent = 'Loading signals…';
+  document.getElementById('svc-detail-body').innerHTML = '<div class="svc-empty">Loading…</div>';
+
+  const res = await api('/v1/entity/signals?type=service&id=' + encodeURIComponent(serviceId));
+  if (!res) {
+    document.getElementById('svc-detail-meta').textContent = 'Failed to load signals.';
+    return;
+  }
+
+  const spans   = res.spans?.data   || [];
+  const metrics = res.metrics?.data || [];
+  const logs    = res.logs?.data    || [];
+
+  document.getElementById('svc-detail-meta').textContent =
+    `${spans.length} spans · ${metrics.length} metrics · ${logs.length} logs (last 1h)`;
+
+  document.getElementById('svc-detail-body').innerHTML = `
+    <div class="svc-signals-tabs">
+      <button class="svc-sig-tab active" onclick="switchSvcTab('spans',this)">Spans <span style="opacity:.6">${spans.length}</span></button>
+      <button class="svc-sig-tab" onclick="switchSvcTab('metrics',this)">Metrics <span style="opacity:.6">${metrics.length}</span></button>
+      <button class="svc-sig-tab" onclick="switchSvcTab('logs',this)">Logs <span style="opacity:.6">${logs.length}</span></button>
+    </div>
+    <div class="svc-sig-body">
+      <div class="svc-sig-pane active" id="sig-spans-pane">
+        ${renderSvcSpans(spans)}
+      </div>
+      <div class="svc-sig-pane" id="sig-metrics-pane">
+        ${renderSvcMetrics(metrics)}
+      </div>
+      <div class="svc-sig-pane" id="sig-logs-pane">
+        ${renderSvcLogs(logs)}
+      </div>
+    </div>
+  `;
+}
+
+function switchSvcTab(name, btn) {
+  btn.closest('.svc-signals-tabs').querySelectorAll('.svc-sig-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('.svc-sig-pane').forEach(p => p.classList.remove('active'));
+  document.getElementById('sig-' + name + '-pane').classList.add('active');
+}
+
+function renderSvcSpans(spans) {
+  if (!spans.length) return '<div class="svc-empty">No recent spans in the last hour.</div>';
+  return `<table style="width:100%;border-collapse:collapse;font-size:12px">
+    ${spans.slice(0, 30).map(s => `
+      <tr style="border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer" onclick="openTrace('${esc(s.trace_id)}')">
+        <td style="padding:5px 10px;font-family:monospace;font-size:11px;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(s.name)}">${esc(s.name)}</td>
+        <td style="padding:5px 10px;color:var(--cyan);font-family:monospace;font-size:11px;white-space:nowrap">${fmtDur(s.duration_ms)}</td>
+        <td style="padding:5px 10px">${s.status_code === 2 ? '<span class="badge b-err" style="font-size:10px">ERR</span>' : '<span class="badge b-ok" style="font-size:10px">OK</span>'}</td>
+        <td style="padding:5px 10px;color:var(--muted);font-family:monospace;font-size:10px;white-space:nowrap">${fmtTime(s.start_ns)}</td>
+      </tr>`).join('')}
+  </table>`;
+}
+
+function renderSvcMetrics(metrics) {
+  if (!metrics.length) return '<div class="svc-empty">No metrics in the last hour.</div>';
+  const byName = {};
+  metrics.forEach(m => { (byName[m.name] = byName[m.name] || []).push(m); });
+  return `<table style="width:100%;border-collapse:collapse;font-size:12px">
+    ${Object.entries(byName).slice(0, 20).map(([name, pts]) => {
+      const latest = pts[pts.length - 1];
+      return `<tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+        <td style="padding:5px 10px;font-family:monospace;font-size:10px;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(name)}">${esc(name)}</td>
+        <td style="padding:5px 10px;color:var(--cyan);font-family:monospace;font-size:11px;text-align:right">${fmtVal(latest.value)}</td>
+        <td style="padding:5px 10px;color:var(--muted);font-size:10px;text-align:right">${pts.length}pts</td>
+      </tr>`;
+    }).join('')}
+  </table>`;
+}
+
+function renderSvcLogs(logs) {
+  if (!logs.length) return '<div class="svc-empty">No logs in the last hour.</div>';
+  return `<table style="width:100%;border-collapse:collapse;font-size:12px">
+    ${logs.slice(0, 30).map(l => `
+      <tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+        <td style="padding:4px 10px;color:var(--muted);font-family:monospace;font-size:10px;white-space:nowrap">${fmtTime(l.timestamp_ns)}</td>
+        <td style="padding:4px 10px">${sevBadge(l.severity)}</td>
+        <td style="padding:4px 10px;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px" title="${esc(l.body)}">${esc(l.body)||'—'}</td>
+      </tr>`).join('')}
+  </table>`;
+}
+
+// ── Auto-refresh ───────────────────────────────────────────────────────────
+function scheduleRefresh() {
+  clearTimeout(refreshTimer);
+  const on = document.getElementById('auto-refresh').checked;
+  document.getElementById('live-dot').style.visibility = on ? 'visible' : 'hidden';
+  if (on) refreshTimer = setTimeout(() => { loadCurrent(); scheduleRefresh(); }, REFRESH_MS);
+}
+
+document.getElementById('auto-refresh').addEventListener('change', scheduleRefresh);
+
+setInterval(() => {
+  document.getElementById('last-refresh').textContent =
+    new Date().toLocaleTimeString('en-US', { hour12: false });
+}, 1000);
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+loadCurrent();
+scheduleRefresh();
+</script>
+</body>
+</html>

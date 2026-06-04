@@ -1,0 +1,47 @@
+# collector.yaml — configure any upstream OTel Collector to send to this backend.
+# This runs alongside your app; the backend runs separately (go run . or binary).
+#
+# Run the backend first:
+#   go run . &
+#
+# Then run the collector:
+#   otelcol --config collector.yaml
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:14317   # collector listens here (from your app)
+      http:
+        endpoint: 0.0.0.0:14318
+
+processors:
+  batch:
+
+exporters:
+  # --- send to our custom backend ---
+  otlp/backend:
+    endpoint: localhost:4317      # backend gRPC port
+    tls:
+      insecure: true
+
+  # --- or use HTTP if you prefer ---
+  # otlphttp/backend:
+  #   endpoint: http://localhost:4318
+  #   tls:
+  #     insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/backend]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/backend]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/backend]
