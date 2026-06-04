@@ -321,9 +321,10 @@ func chMetricWhere(q MetricQuery) (string, []any) {
 		c = append(c, "name = ?")
 		a = append(a, q.Name)
 	}
-	if q.Service != "" {
-		c = append(c, "JSONExtractString(resource_attrs, 'service.name') = ?")
-		a = append(a, q.Service)
+	if q.Service != "" || len(q.K8sAttrs) > 0 {
+		sub, subArgs := chServiceOrK8sClauses(q.Service, q.K8sAttrs)
+		c = append(c, sub)
+		a = append(a, subArgs...)
 	}
 	if q.From > 0 {
 		c = append(c, "timestamp_ns >= ?")
@@ -347,9 +348,10 @@ func chLogWhere(q LogQuery) (string, []any) {
 		c = append(c, "trace_id = ?")
 		a = append(a, q.TraceID)
 	}
-	if q.Service != "" {
-		c = append(c, "JSONExtractString(resource_attrs, 'service.name') = ?")
-		a = append(a, q.Service)
+	if q.Service != "" || len(q.K8sAttrs) > 0 {
+		sub, subArgs := chServiceOrK8sClauses(q.Service, q.K8sAttrs)
+		c = append(c, sub)
+		a = append(a, subArgs...)
 	}
 	if q.From > 0 {
 		c = append(c, "timestamp_ns >= ?")
@@ -360,6 +362,33 @@ func chLogWhere(q LogQuery) (string, []any) {
 		a = append(a, q.To)
 	}
 	return whereClause(c), a
+}
+
+func chServiceOrK8sClauses(service string, k8sAttrs map[string]string) (string, []any) {
+	var parts []string
+	var args []any
+	if service != "" {
+		parts = append(parts, "JSONExtractString(resource_attrs, 'service.name') = ?")
+		args = append(args, service)
+	}
+	allowed := map[string]bool{
+		"k8s.pod.name":        true,
+		"k8s.deployment.name": true,
+		"k8s.namespace.name":  true,
+		"k8s.node.name":       true,
+		"k8s.container.name":  true,
+	}
+	for k, v := range k8sAttrs {
+		if !allowed[k] {
+			continue
+		}
+		parts = append(parts, "JSONExtractString(resource_attrs, '"+k+"') = ?")
+		args = append(args, v)
+	}
+	if len(parts) == 0 {
+		return "1=1", nil
+	}
+	return "(" + strings.Join(parts, " OR ") + ")", args
 }
 
 // shared WHERE helper already defined in sqlite.go — using strings pkg here

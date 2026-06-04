@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -52,22 +53,26 @@ func (s *queryServer) spans(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *queryServer) metrics(w http.ResponseWriter, r *http.Request) {
+	service := r.URL.Query().Get("service")
 	q := storage.MetricQuery{
-		Name:    r.URL.Query().Get("name"),
-		Service: r.URL.Query().Get("service"),
-		From:    parseInt64(r.URL.Query().Get("from")),
-		To:      parseInt64(r.URL.Query().Get("to")),
-		Limit:   parseInt(r.URL.Query().Get("limit")),
+		Name:     r.URL.Query().Get("name"),
+		Service:  service,
+		K8sAttrs: entityK8sAttrs(r.Context(), s.store, service),
+		From:     parseInt64(r.URL.Query().Get("from")),
+		To:       parseInt64(r.URL.Query().Get("to")),
+		Limit:    parseInt(r.URL.Query().Get("limit")),
 	}
 	rows, err := s.store.QueryMetrics(r.Context(), q)
 	writeJSON(w, rows, err, s.logger)
 }
 
 func (s *queryServer) logs(w http.ResponseWriter, r *http.Request) {
+	service := r.URL.Query().Get("service")
 	q := storage.LogQuery{
 		Severity: r.URL.Query().Get("severity"),
 		TraceID:  r.URL.Query().Get("trace_id"),
-		Service:  r.URL.Query().Get("service"),
+		Service:  service,
+		K8sAttrs: entityK8sAttrs(r.Context(), s.store, service),
 		From:     parseInt64(r.URL.Query().Get("from")),
 		To:       parseInt64(r.URL.Query().Get("to")),
 		Limit:    parseInt(r.URL.Query().Get("limit")),
@@ -181,4 +186,43 @@ func parseInt(s string) int {
 func parseInt64(s string) int64 {
 	n, _ := strconv.ParseInt(s, 10, 64)
 	return n
+}
+
+// entityK8sAttrs looks up a service entity and returns its k8s resource attributes
+// (pod, deployment, namespace, node) so metrics/logs can be correlated even when
+// the emitting agent does not inject service.name.
+func entityK8sAttrs(ctx context.Context, store *storage.Storage, service string) map[string]string {
+	if service == "" {
+		return nil
+	}
+	entities, err := store.QueryEntities(ctx, "service")
+	if err != nil {
+		return nil
+	}
+	for _, e := range entities {
+		if e.EntityID != service {
+			continue
+		}
+		var attrs map[string]any
+		if json.Unmarshal([]byte(e.Attrs), &attrs) != nil {
+			return nil
+		}
+		k8s := map[string]string{}
+		for _, key := range []string{
+			"k8s.pod.name",
+			"k8s.deployment.name",
+			"k8s.namespace.name",
+			"k8s.node.name",
+			"k8s.container.name",
+		} {
+			if v, ok := attrs[key].(string); ok && v != "" {
+				k8s[key] = v
+			}
+		}
+		if len(k8s) > 0 {
+			return k8s
+		}
+		return nil
+	}
+	return nil
 }

@@ -84,17 +84,19 @@ type SpanQuery struct {
 }
 
 type MetricQuery struct {
-	Name    string
-	Service string // filter by resource_attrs["service.name"]
-	From    int64
-	To      int64
-	Limit   int
+	Name     string
+	Service  string            // filter by resource_attrs["service.name"]
+	K8sAttrs map[string]string // OR-match k8s resource attrs (pod, deployment, namespace)
+	From     int64
+	To       int64
+	Limit    int
 }
 
 type LogQuery struct {
 	Severity string
 	TraceID  string
-	Service  string // filter by resource_attrs["service.name"]
+	Service  string            // filter by resource_attrs["service.name"]
+	K8sAttrs map[string]string // OR-match k8s resource attrs
 	From     int64
 	To       int64
 	Limit    int

@@ -284,9 +284,10 @@ func metricWhere(q MetricQuery) (string, []any) {
 		clauses = append(clauses, "name = ?")
 		args = append(args, q.Name)
 	}
-	if q.Service != "" {
-		clauses = append(clauses, `json_extract(resource_attrs, '$."service.name"') = ?`)
-		args = append(args, q.Service)
+	if q.Service != "" || len(q.K8sAttrs) > 0 {
+		sub, subArgs := serviceOrK8sClauses(q.Service, q.K8sAttrs)
+		clauses = append(clauses, sub)
+		args = append(args, subArgs...)
 	}
 	if q.From > 0 {
 		clauses = append(clauses, "timestamp_ns >= ?")
@@ -310,9 +311,10 @@ func logWhere(q LogQuery) (string, []any) {
 		clauses = append(clauses, "trace_id = ?")
 		args = append(args, q.TraceID)
 	}
-	if q.Service != "" {
-		clauses = append(clauses, `json_extract(resource_attrs, '$."service.name"') = ?`)
-		args = append(args, q.Service)
+	if q.Service != "" || len(q.K8sAttrs) > 0 {
+		sub, subArgs := serviceOrK8sClauses(q.Service, q.K8sAttrs)
+		clauses = append(clauses, sub)
+		args = append(args, subArgs...)
 	}
 	if q.From > 0 {
 		clauses = append(clauses, "timestamp_ns >= ?")
@@ -323,6 +325,35 @@ func logWhere(q LogQuery) (string, []any) {
 		args = append(args, q.To)
 	}
 	return whereClause(clauses), args
+}
+
+// serviceOrK8sClauses builds an OR clause matching service.name OR any k8s resource attrs.
+// Only a fixed whitelist of k8s keys is accepted to prevent injection.
+func serviceOrK8sClauses(service string, k8sAttrs map[string]string) (string, []any) {
+	var parts []string
+	var args []any
+	if service != "" {
+		parts = append(parts, `json_extract(resource_attrs, '$."service.name"') = ?`)
+		args = append(args, service)
+	}
+	allowed := map[string]bool{
+		"k8s.pod.name":        true,
+		"k8s.deployment.name": true,
+		"k8s.namespace.name":  true,
+		"k8s.node.name":       true,
+		"k8s.container.name":  true,
+	}
+	for k, v := range k8sAttrs {
+		if !allowed[k] {
+			continue
+		}
+		parts = append(parts, `json_extract(resource_attrs, '$."`+k+`"') = ?`)
+		args = append(args, v)
+	}
+	if len(parts) == 0 {
+		return "1=1", nil
+	}
+	return "(" + strings.Join(parts, " OR ") + ")", args
 }
 
 func whereClause(clauses []string) string {
