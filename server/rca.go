@@ -48,17 +48,18 @@ type CauseCandidate struct {
 }
 
 type RCAResult struct {
-	Entity          string                       `json:"entity"`
-	IncidentTs      int64                        `json:"incident_ts"`
-	WindowSecs      int                          `json:"window_secs"`
-	Health          EntityHealth                 `json:"health"`
-	Baseline        EntityHealth                 `json:"baseline"` // health in previous window (before incident)
-	Upstream        []NeighborHealth             `json:"upstream"`
-	Downstream      []NeighborHealth             `json:"downstream"`
-	CoLocated       []NeighborHealth             `json:"co_located"`
-	CandidateCauses []CauseCandidate             `json:"candidate_causes"`
-	ErrorSignatures []storage.ErrorSignatureRow  `json:"error_signatures,omitempty"`
-	Narrative       string                       `json:"narrative,omitempty"`
+	Entity             string                        `json:"entity"`
+	IncidentTs         int64                         `json:"incident_ts"`
+	WindowSecs         int                           `json:"window_secs"`
+	Health             EntityHealth                  `json:"health"`
+	Baseline           EntityHealth                  `json:"baseline"` // health in previous window (before incident)
+	Upstream           []NeighborHealth              `json:"upstream"`
+	Downstream         []NeighborHealth              `json:"downstream"`
+	CoLocated          []NeighborHealth              `json:"co_located"`
+	CandidateCauses    []CauseCandidate              `json:"candidate_causes"`
+	ErrorSignatures    []storage.ErrorSignatureRow   `json:"error_signatures,omitempty"`
+	TraceFingerprints  []storage.TraceFingerprintRow `json:"trace_fingerprints,omitempty"`
+	Narrative          string                        `json:"narrative,omitempty"`
 }
 
 // ─── HTTP handler ─────────────────────────────────────────────────────────────
@@ -144,19 +145,38 @@ func (s *queryServer) rca(w http.ResponseWriter, r *http.Request) {
 				time.Unix(sig.FirstSeenAt/1_000_000_000, 0).UTC().Format("15:04:05")),
 		})
 	}
+
+	// Trace fingerprints: novel call paths not seen in baseline
+	traceFingerprints, _ := s.store.QueryTraceFingerprints(ctx, entityID)
+	for _, fp := range traceFingerprints {
+		if fp.IsBaseline {
+			continue // known structure, not novel
+		}
+		conf := math.Min(0.85, 0.55+math.Min(0.3, float64(fp.OccurrenceCount)/5))
+		candidates = append(candidates, CauseCandidate{
+			EntityID:  entityID,
+			CauseType: "trace_drift",
+			Confidence: conf,
+			Evidence: fmt.Sprintf("new call path rooted at %s: %d edge(s), seen %d time(s) (first at %s)",
+				fp.RootService, edgeCount(fp.EdgeList), fp.OccurrenceCount,
+				time.Unix(fp.FirstSeenAt/1_000_000_000, 0).UTC().Format("15:04:05")),
+		})
+	}
+
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Confidence > candidates[j].Confidence })
 
 	result := RCAResult{
-		Entity:          entityID,
-		IncidentTs:      incidentTs,
-		WindowSecs:      windowSecs,
-		Health:          health,
-		Baseline:        baseline,
-		Upstream:        upstream,
-		Downstream:      downstream,
-		CoLocated:       coLocated,
-		CandidateCauses: candidates,
-		ErrorSignatures: errorSigs,
+		Entity:             entityID,
+		IncidentTs:         incidentTs,
+		WindowSecs:         windowSecs,
+		Health:             health,
+		Baseline:           baseline,
+		Upstream:           upstream,
+		Downstream:         downstream,
+		CoLocated:          coLocated,
+		CandidateCauses:    candidates,
+		ErrorSignatures:    errorSigs,
+		TraceFingerprints:  traceFingerprints,
 	}
 
 	if withAI {
@@ -401,6 +421,15 @@ func lagNote(lagSecs float64) string {
 		return fmt.Sprintf(" [degraded %.0fs before window]", -lagSecs)
 	}
 	return ""
+}
+
+// edgeCount returns the number of edges in a JSON-encoded edge list string.
+func edgeCount(edgeListJSON string) int {
+	var edges []string
+	if json.Unmarshal([]byte(edgeListJSON), &edges) != nil {
+		return 0
+	}
+	return len(edges)
 }
 
 func p95(sorted []float64) float64 {

@@ -1927,8 +1927,11 @@ function renderRCAResult(r) {
     const typeLabel = {
       downstream_error: 'Downstream Error', infra_pressure: 'Infra Pressure',
       upstream_spike: 'Traffic Spike', error_signature: 'New Error Pattern',
+      trace_drift: 'New Call Path',
     }[c.cause_type] || c.cause_type;
-    const typeColor = c.cause_type === 'error_signature' ? '#f97316' : 'var(--muted)';
+    const typeColor = c.cause_type === 'error_signature' ? '#f97316'
+                    : c.cause_type === 'trace_drift'     ? 'var(--cyan)'
+                    : 'var(--muted)';
     return `
     <div style="background:var(--bg);border:1px solid ${i===0?'var(--red)':'var(--border)'};border-radius:8px;padding:12px;margin-bottom:8px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
@@ -1942,6 +1945,37 @@ function renderRCAResult(r) {
       <div style="font-size:12px;color:var(--muted)">${esc(c.evidence)}</div>
     </div>`;
   }).join('');
+
+  // Trace fingerprint table (novel call paths not in baseline)
+  const novelFPs = (r.trace_fingerprints || []).filter(fp => !fp.is_baseline);
+  const traceFPTable = novelFPs.length ? `
+    <div style="margin-top:16px">
+      <div style="font-size:10px;font-weight:600;color:var(--cyan);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">
+        ⚡ New Call Paths (${novelFPs.length})
+      </div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;overflow:hidden">
+        ${novelFPs.map(fp => {
+          let edges = [];
+          try { edges = JSON.parse(fp.edge_list || '[]'); } catch {}
+          return `
+          <div style="padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.04)">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+              <span style="font-family:monospace;font-size:11px;font-weight:600;color:var(--cyan)">
+                root: ${esc(fp.root_service||'—')}
+              </span>
+              <div style="display:flex;gap:10px;font-size:11px;color:var(--muted)">
+                <span>${edges.length} edge${edges.length!==1?'s':''}</span>
+                <span>seen ×${fp.occurrence_count||0}</span>
+                <span>first ${fp.first_seen_at ? new Date(fp.first_seen_at/1e6).toLocaleTimeString() : '—'}</span>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:3px">
+              ${edges.map(e => `<span style="font-family:monospace;font-size:11px;color:var(--muted);padding-left:8px">→ ${esc(e)}</span>`).join('')}
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>` : '';
 
   // Error signature detail table (shown when error_signature signals are present)
   const errSigRows = (r.error_signatures || []).filter(s => !s.is_baseline);
@@ -1989,6 +2023,7 @@ function renderRCAResult(r) {
     <div>
       <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Candidate Causes</div>
       ${causeCards || '<div style="color:var(--muted);font-size:12px;padding:8px 0">No strong candidates found — service may be the origin, or insufficient data in the window.</div>'}
+      ${traceFPTable}
       ${errSigTable}
       <div style="margin-top:16px">
         <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">AI Summary</div>
