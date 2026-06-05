@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -31,6 +32,7 @@ func NewQueryServer(store *storage.Storage, logger *zap.Logger) http.Handler {
 	mux.HandleFunc("/v1/entities", s.entities)
 	mux.HandleFunc("/v1/topology", s.topology)
 	mux.HandleFunc("/v1/entity/signals", s.entitySignals)
+	mux.HandleFunc("/v1/rca", s.rca)
 	return mux
 }
 
@@ -54,13 +56,22 @@ func (s *queryServer) spans(w http.ResponseWriter, r *http.Request) {
 
 func (s *queryServer) metrics(w http.ResponseWriter, r *http.Request) {
 	service := r.URL.Query().Get("service")
+	var namePrefixes []string
+	if raw := r.URL.Query().Get("prefix"); raw != "" {
+		for _, p := range strings.Split(raw, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				namePrefixes = append(namePrefixes, p)
+			}
+		}
+	}
 	q := storage.MetricQuery{
-		Name:     r.URL.Query().Get("name"),
-		Service:  service,
-		K8sAttrs: entityK8sAttrs(r.Context(), s.store, service),
-		From:     parseInt64(r.URL.Query().Get("from")),
-		To:       parseInt64(r.URL.Query().Get("to")),
-		Limit:    parseInt(r.URL.Query().Get("limit")),
+		Name:         r.URL.Query().Get("name"),
+		NamePrefixes: namePrefixes,
+		Service:      service,
+		K8sAttrs:     entityK8sAttrs(r.Context(), s.store, service),
+		From:         parseInt64(r.URL.Query().Get("from")),
+		To:           parseInt64(r.URL.Query().Get("to")),
+		Limit:        parseInt(r.URL.Query().Get("limit")),
 	}
 	rows, err := s.store.QueryMetrics(r.Context(), q)
 	writeJSON(w, rows, err, s.logger)
@@ -211,9 +222,7 @@ func entityK8sAttrs(ctx context.Context, store *storage.Storage, service string)
 		for _, key := range []string{
 			"k8s.pod.name",
 			"k8s.deployment.name",
-			"k8s.namespace.name",
-			"k8s.node.name",
-			"k8s.container.name",
+			// namespace and node are too broad — they match all pods on that node/namespace
 		} {
 			if v, ok := attrs[key].(string); ok && v != "" {
 				k8s[key] = v

@@ -321,6 +321,14 @@ func chMetricWhere(q MetricQuery) (string, []any) {
 		c = append(c, "name = ?")
 		a = append(a, q.Name)
 	}
+	if len(q.NamePrefixes) > 0 {
+		parts := make([]string, len(q.NamePrefixes))
+		for i, p := range q.NamePrefixes {
+			parts[i] = "name LIKE ?"
+			a = append(a, p+".%")
+		}
+		c = append(c, "("+strings.Join(parts, " OR ")+")")
+	}
 	if q.Service != "" || len(q.K8sAttrs) > 0 {
 		sub, subArgs := chServiceOrK8sClauses(q.Service, q.K8sAttrs)
 		c = append(c, sub)

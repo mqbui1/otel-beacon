@@ -284,6 +284,14 @@ func metricWhere(q MetricQuery) (string, []any) {
 		clauses = append(clauses, "name = ?")
 		args = append(args, q.Name)
 	}
+	if len(q.NamePrefixes) > 0 {
+		parts := make([]string, len(q.NamePrefixes))
+		for i, p := range q.NamePrefixes {
+			parts[i] = "name LIKE ?"
+			args = append(args, p+".%")
+		}
+		clauses = append(clauses, "("+strings.Join(parts, " OR ")+")")
+	}
 	if q.Service != "" || len(q.K8sAttrs) > 0 {
 		sub, subArgs := serviceOrK8sClauses(q.Service, q.K8sAttrs)
 		clauses = append(clauses, sub)

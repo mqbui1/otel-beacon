@@ -444,7 +444,12 @@
 <div class="tab" id="tab-metrics">
   <div class="filters">
     <label>Metric Name<input id="f-metric-name" placeholder="jvm.* or http.*"></label>
-    <label>Service<input id="f-metric-service" placeholder="entity filter" list="metric-svc-list"><datalist id="metric-svc-list"></datalist></label>
+    <label>Service
+      <span style="display:flex;gap:4px;align-items:center">
+        <input id="f-metric-service" placeholder="entity filter" list="metric-svc-list" autocomplete="off"><datalist id="metric-svc-list"></datalist>
+        <button type="button" title="Clear service" onclick="document.getElementById('f-metric-service').value='';loadMetrics()" style="padding:0 6px;line-height:1.6;background:#2a2d40;border:1px solid #3a3d50;border-radius:4px;color:#94a3b8;cursor:pointer">×</button>
+      </span>
+    </label>
     <label>Category
       <select id="f-metric-category">
         <option value="">All</option>
@@ -592,6 +597,32 @@
 
 </main>
 
+<!-- ══ RCA MODAL ════════════════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="rca-modal" onclick="if(event.target===this)closeRCA()">
+  <div class="modal" style="max-width:1020px">
+    <div class="modal-hdr">
+      <div>
+        <h2 id="rca-modal-title">Root Cause Analysis</h2>
+        <div class="modal-meta" id="rca-modal-meta">Select a service and click Analyze</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select id="rca-window-sel" style="background:var(--surface);border:1px solid var(--border);color:var(--fg);padding:5px 8px;border-radius:4px;font-size:12px">
+          <option value="300">Last 5 min</option>
+          <option value="900">Last 15 min</option>
+          <option value="1800">Last 30 min</option>
+          <option value="3600">Last 1 hour</option>
+        </select>
+        <button onclick="runRCA()" style="background:var(--accent);color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">Analyze</button>
+        <button onclick="runRCAWithAI()" style="background:#7c3aed;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600">AI Summary</button>
+        <button class="modal-close" onclick="closeRCA()">✕</button>
+      </div>
+    </div>
+    <div id="rca-body" style="padding:20px 24px;overflow-y:auto;max-height:calc(85vh - 80px)">
+      <div class="empty">Select a service and click Analyze.</div>
+    </div>
+  </div>
+</div>
+
 <script>
 // ── Globals ────────────────────────────────────────────────────────────────
 let currentTab = 'traces';
@@ -600,6 +631,12 @@ let refreshTimer = null;
 const REFRESH_MS = 5000;
 
 // ── Tab switching ──────────────────────────────────────────────────────────
+async function populateServiceDatalist() {
+  const res = await api('/v1/entities?type=service');
+  const list = document.getElementById('metric-svc-list');
+  if (list) list.innerHTML = (res?.data || []).map(e => `<option value="${esc(e.entity_id)}">`).join('');
+}
+
 function switchTab(tab, btn) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
@@ -660,6 +697,15 @@ function sevBadge(sev) {
 
 function esc(s) {
   return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Extract a human-readable service/source label from resource_attrs.
+// Falls back through k8s.deployment.name → k8s.pod.name → k8s.namespace.name for infra metrics.
+function svcLabel(resourceAttrsJson) {
+  try {
+    const a = JSON.parse(resourceAttrsJson || '{}');
+    return a['service.name'] || a['k8s.deployment.name'] || a['k8s.pod.name'] || a['k8s.namespace.name'] || '—';
+  } catch { return '—'; }
 }
 
 async function api(path) {
@@ -1038,7 +1084,7 @@ function handleOverlayClick(e) {
 }
 
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') closeModal();
+  if (e.key === 'Escape') { closeModal(); closeRCA(); }
 });
 
 // ── Metrics ────────────────────────────────────────────────────────────────
@@ -1067,27 +1113,33 @@ function metricCategory(name) {
   return 'custom';
 }
 
+// Map category values → name prefixes sent to the backend
+const CATEGORY_PREFIXES = {
+  infra:     'system,process,host,container,k8s,network,disk,cpu,memory,hw',
+  app:       'http,rpc,grpc,faas,aspnetcore,signalr',
+  database:  'db,database,sql,mongodb,redis,elasticsearch,cassandra',
+  jvm:       'jvm',
+  runtime:   'go,nodejs,python,dotnet,ruby,runtime',
+  messaging: 'messaging,kafka,rabbitmq,pubsub',
+  ai:        'gen_ai,llm',
+};
+
 async function loadMetrics() {
   const p = new URLSearchParams({ limit: document.getElementById('f-metric-limit').value || 300 });
   const name = document.getElementById('f-metric-name').value.trim();
   const svc  = document.getElementById('f-metric-service').value.trim();
+  const cat  = document.getElementById('f-metric-category').value;
   if (name) p.set('name', name);
   if (svc)  p.set('service', svc);
+  if (cat && CATEGORY_PREFIXES[cat]) p.set('prefix', CATEGORY_PREFIXES[cat]);
 
   const res = await api('/v1/query/metrics?' + p);
   const allRows = res?.data || [];
 
-  // Populate service datalist
-  const svcRes = await api('/v1/entities?type=service');
-  const svcList = document.getElementById('metric-svc-list');
-  svcList.innerHTML = (svcRes?.data || []).map(e => `<option value="${esc(e.entity_id)}">`).join('');
-
-  // Client-side filtering by category and type
-  const catFilter  = document.getElementById('f-metric-category').value;
+  // Client-side type filter only (category is now handled server-side)
   const typeFilter = document.getElementById('f-metric-type').value.toLowerCase();
   const rows = allRows.filter(r => {
-    if (catFilter  && metricCategory(r.name) !== catFilter) return false;
-    if (typeFilter && r.type.toLowerCase() !== typeFilter)  return false;
+    if (typeFilter && r.type.toLowerCase() !== typeFilter) return false;
     return true;
   });
 
@@ -1152,7 +1204,7 @@ async function loadMetrics() {
   tbody.innerHTML = rows.slice(0, 200).map(r => {
     const cat = metricCategory(r.name);
     const catColor = CATEGORY_COLORS_MAP[cat] || '#64748b';
-    const svcName = (() => { try { return JSON.parse(r.resource_attrs)?.['service.name'] || '—'; } catch { return '—'; } })();
+    const svcName = svcLabel(r.resource_attrs);
     return `
     <tr class="clickable" data-svc="${esc(svcName)}" data-ts="${r.timestamp_ns}" onclick="openSignalDetail(this.dataset.svc,+this.dataset.ts,'metric')">
       <td><span class="mono trunc" style="max-width:360px" title="${esc(r.name)}">${esc(r.name)}</span></td>
@@ -1201,8 +1253,7 @@ async function loadLogs() {
     return;
   }
   tbody.innerHTML = rows.map(r => {
-    let svcName = '—';
-    try { svcName = JSON.parse(r.resource_attrs||'{}')['service.name'] || '—'; } catch {}
+    const svcName = svcLabel(r.resource_attrs);
     return `
     <tr class="clickable" data-svc="${esc(svcName)}" data-ts="${r.timestamp_ns}" onclick="openSignalDetail(this.dataset.svc,+this.dataset.ts,'log')">
       <td class="mono dim" style="white-space:nowrap">${fmtTime(r.timestamp_ns)}</td>
@@ -1462,10 +1513,16 @@ function renderServiceTable(entities, edges) {
       <td class="dim mono">${lastSeen}</td>
       <td class="dim">${inbound[e.entity_id]  || 0}</td>
       <td class="dim">${outbound[e.entity_id] || 0}</td>
-      <td><button onclick="event.stopPropagation();selectService('${esc(e.entity_id)}')"
+      <td style="display:flex;gap:6px">
+        <button onclick="event.stopPropagation();selectService('${esc(e.entity_id)}')"
             style="background:none;border:1px solid var(--border);color:var(--accent);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px">
           Inspect
-        </button></td>
+        </button>
+        <button onclick="event.stopPropagation();openRCA('${esc(e.entity_id)}')"
+            style="background:none;border:1px solid #7c3aed;color:#a78bfa;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px">
+          RCA
+        </button>
+      </td>
     </tr>`;
   }).join('');
 }
@@ -1576,9 +1633,176 @@ setInterval(() => {
     new Date().toLocaleTimeString('en-US', { hour12: false });
 }, 1000);
 
+// ── RCA ────────────────────────────────────────────────────────────────────
+let _rcaEntityID = null;
+
+function openRCA(entityId) {
+  _rcaEntityID = entityId;
+  document.getElementById('rca-modal-title').textContent = 'RCA — ' + entityId;
+  document.getElementById('rca-modal-meta').textContent = 'Click Analyze to start';
+  document.getElementById('rca-body').innerHTML = '<div class="empty">Click Analyze to start RCA.</div>';
+  document.getElementById('rca-modal').classList.add('open');
+}
+
+function closeRCA() {
+  document.getElementById('rca-modal').classList.remove('open');
+}
+
+async function runRCA(withAI) {
+  if (!_rcaEntityID) return;
+  const win = document.getElementById('rca-window-sel').value;
+  document.getElementById('rca-body').innerHTML = '<div class="empty">Analyzing…</div>';
+  const url = `/v1/rca?entity=${encodeURIComponent(_rcaEntityID)}&window=${win}${withAI ? '&ai=true' : ''}`;
+  const res = await api(url);
+  if (!res) {
+    document.getElementById('rca-body').innerHTML = '<div class="empty">RCA request failed.</div>';
+    return;
+  }
+  const nCauses = res.candidate_causes?.length || 0;
+  document.getElementById('rca-modal-meta').textContent =
+    `${_rcaEntityID} · ${win/60}min window · ${nCauses} candidate${nCauses !== 1 ? 's' : ''} found`;
+  document.getElementById('rca-body').innerHTML = renderRCAResult(res);
+}
+
+async function runRCAWithAI() {
+  if (!_rcaEntityID) return;
+  const win = document.getElementById('rca-window-sel').value;
+  // If RCA panel is empty, run full analysis with AI
+  const narrativeEl = document.getElementById('rca-narrative');
+  if (!narrativeEl) {
+    return runRCA(true);
+  }
+  // Panel already rendered — just fetch the narrative
+  narrativeEl.innerHTML = '<div class="empty" style="padding:12px">Calling Bedrock…</div>';
+  const url = `/v1/rca?entity=${encodeURIComponent(_rcaEntityID)}&window=${win}&ai=true`;
+  const res = await api(url);
+  if (res?.narrative) {
+    narrativeEl.innerHTML = `<div style="line-height:1.7;font-size:13px;color:var(--fg)">${esc(res.narrative)}</div>`;
+  } else {
+    narrativeEl.innerHTML = '<div class="empty" style="padding:12px">AI summary unavailable.</div>';
+  }
+}
+
+function renderRCAResult(r) {
+  const h = r.health, b = r.baseline;
+
+  function errColor(rate) {
+    return rate > 0.2 ? 'var(--red)' : rate > 0.05 ? '#f97316' : '#22c55e';
+  }
+
+  function healthCard(label, health) {
+    const c = errColor(health.error_rate || 0);
+    return `
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px">
+      <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">${label}</div>
+      ${!health.has_data && !health.span_total ? '<div style="color:var(--muted);font-size:12px">No data in window</div>' : `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <div style="font-size:10px;color:var(--muted)">Error Rate</div>
+          <div style="font-size:22px;font-weight:700;color:${c}">${((health.error_rate||0)*100).toFixed(1)}%</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted)">P95 Latency</div>
+          <div style="font-size:22px;font-weight:700;color:var(--cyan)">${(health.p95_ms||0).toFixed(0)}ms</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted)">Spans</div>
+          <div style="font-size:13px;font-weight:600">${health.span_total||0} <span style="color:var(--red)">(${health.span_errors||0} err)</span></div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:var(--muted)">Log Errors</div>
+          <div style="font-size:13px;font-weight:600;color:${(health.log_errors||0)>0?'var(--red)':'var(--fg)'}">${health.log_errors||0}</div>
+        </div>
+        ${health.cpu_usage > 0 ? `
+        <div>
+          <div style="font-size:10px;color:var(--muted)">CPU Usage</div>
+          <div style="font-size:13px;font-weight:600">${((health.cpu_usage||0)*100).toFixed(1)}%</div>
+        </div>` : ''}
+      </div>`}
+    </div>`;
+  }
+
+  function neighborTable(label, neighbors) {
+    if (!neighbors?.length) return '';
+    return `
+    <div style="margin-bottom:16px">
+      <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">${label}</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="border-bottom:1px solid var(--border)">
+          <th style="padding:5px 8px;text-align:left;color:var(--muted);font-weight:500">Service</th>
+          <th style="padding:5px 8px;text-align:right;color:var(--muted);font-weight:500">Err%</th>
+          <th style="padding:5px 8px;text-align:right;color:var(--muted);font-weight:500">P95</th>
+          <th style="padding:5px 8px;text-align:right;color:var(--muted);font-weight:500">Spans</th>
+          <th style="padding:5px 8px"></th>
+        </tr></thead>
+        <tbody>
+          ${neighbors.map(n => {
+            const c = errColor(n.health?.error_rate || 0);
+            const lag = n.lag_seconds < -30
+              ? `<span style="background:#ef444420;color:#ef4444;padding:2px 6px;border-radius:4px;font-size:10px;white-space:nowrap">precedes incident</span>`
+              : '';
+            return `<tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+              <td style="padding:5px 8px;font-family:monospace;font-size:11px">${esc(n.entity_id)}</td>
+              <td style="padding:5px 8px;text-align:right;font-family:monospace;color:${c}">${((n.health?.error_rate||0)*100).toFixed(1)}%</td>
+              <td style="padding:5px 8px;text-align:right;font-family:monospace;color:var(--cyan)">${(n.health?.p95_ms||0).toFixed(0)}ms</td>
+              <td style="padding:5px 8px;text-align:right;font-family:monospace">${n.health?.span_total||0}</td>
+              <td style="padding:5px 8px">${lag}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>`;
+  }
+
+  const causeCards = (r.candidate_causes || []).map((c, i) => {
+    const pct = Math.round(c.confidence * 100);
+    const confColor = pct >= 70 ? 'var(--red)' : pct >= 45 ? '#f97316' : '#eab308';
+    const typeLabel = { downstream_error: 'Downstream Error', infra_pressure: 'Infra Pressure', upstream_spike: 'Traffic Spike' }[c.cause_type] || c.cause_type;
+    return `
+    <div style="background:var(--bg);border:1px solid ${i===0?'var(--red)':'var(--border)'};border-radius:8px;padding:12px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          ${i===0?'<span style="background:#ef444422;color:#ef4444;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:700">TOP CANDIDATE</span>':''}
+          <span style="font-weight:600;font-size:13px;font-family:monospace">${esc(c.entity_id)}</span>
+          <span style="background:var(--surface);color:var(--muted);padding:2px 6px;border-radius:4px;font-size:10px">${esc(typeLabel)}</span>
+        </div>
+        <span style="font-size:20px;font-weight:700;color:${confColor};flex-shrink:0">${pct}%</span>
+      </div>
+      <div style="font-size:12px;color:var(--muted)">${esc(c.evidence)}</div>
+    </div>`;
+  }).join('');
+
+  return `
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
+    ${healthCard('Incident Window', h)}
+    ${healthCard('Baseline (prev window)', b)}
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+    <div>
+      ${neighborTable('Downstream (called by focal)', r.downstream)}
+      ${neighborTable('Upstream (callers of focal)', r.upstream)}
+      ${neighborTable('Co-located (same node)', r.co_located)}
+      ${!r.downstream?.length && !r.upstream?.length && !r.co_located?.length
+        ? '<div style="color:var(--muted);font-size:12px;padding:8px 0">No entity relationships found — topology may not be populated yet.</div>'
+        : ''}
+    </div>
+    <div>
+      <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Candidate Causes</div>
+      ${causeCards || '<div style="color:var(--muted);font-size:12px;padding:8px 0">No strong candidates found — service may be the origin, or insufficient data in the window.</div>'}
+      <div style="margin-top:16px">
+        <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">AI Summary</div>
+        <div id="rca-narrative" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;color:var(--muted)">
+          ${r.narrative ? `<div style="line-height:1.7;font-size:13px;color:var(--fg)">${esc(r.narrative)}</div>` : 'Click "AI Summary" to generate an explanation using AWS Bedrock.'}
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
 // ── Boot ───────────────────────────────────────────────────────────────────
 loadCurrent();
 scheduleRefresh();
+populateServiceDatalist();
 </script>
 </body>
 </html>

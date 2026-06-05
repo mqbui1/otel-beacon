@@ -84,12 +84,13 @@ type SpanQuery struct {
 }
 
 type MetricQuery struct {
-	Name     string
-	Service  string            // filter by resource_attrs["service.name"]
-	K8sAttrs map[string]string // OR-match k8s resource attrs (pod, deployment, namespace)
-	From     int64
-	To       int64
-	Limit    int
+	Name         string
+	NamePrefixes []string          // OR-match: name LIKE 'prefix.%'
+	Service      string            // filter by resource_attrs["service.name"]
+	K8sAttrs     map[string]string // OR-match k8s resource attrs (pod, deployment, namespace)
+	From         int64
+	To           int64
+	Limit        int
 }
 
 type LogQuery struct {
