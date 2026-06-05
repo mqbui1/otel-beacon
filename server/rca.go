@@ -411,7 +411,36 @@ func rankCauses(focal, baseline EntityHealth, upstream, downstream, coLocated []
 		}
 	}
 
-	_ = baseline // available for future confidence tuning against baseline error rate
+	// Self: focal entity error rate is itself the problem
+	if focal.HasData && focal.ErrorRate > 0.05 {
+		conf := math.Min(0.8, 0.4+focal.ErrorRate)
+		if baseline.HasData && baseline.ErrorRate > 0 && focal.ErrorRate > baseline.ErrorRate*2 {
+			conf = math.Min(0.9, conf+0.15) // regression vs baseline
+		}
+		out = append(out, CauseCandidate{
+			EntityID:   focal.EntityID,
+			CauseType:  "self_error",
+			Confidence: conf,
+			Evidence:   fmt.Sprintf("focal error rate %.0f%% (P95 %.1fms, %d spans)", focal.ErrorRate*100, focal.P95Ms, focal.SpanTotal),
+		})
+	}
+
+	// Self: focal entity has high CPU pressure
+	if focal.HasData && focal.CpuUsage > 0.7 {
+		conf := math.Min(0.75, 0.3+focal.CpuUsage*0.4)
+		out = append(out, CauseCandidate{
+			EntityID:   focal.EntityID,
+			CauseType:  "self_infra",
+			Confidence: conf,
+			Evidence:   fmt.Sprintf("focal CPU %.0f%%%s", focal.CpuUsage*100, func() string {
+				if focal.MemRssBytes > 0 {
+					return fmt.Sprintf(", mem %dMB", focal.MemRssBytes/1_000_000)
+				}
+				return ""
+			}()),
+		})
+	}
+
 	sort.Slice(out, func(i, j int) bool { return out[i].Confidence > out[j].Confidence })
 	return out
 }

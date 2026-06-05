@@ -534,8 +534,11 @@ func whereClause(clauses []string) string {
 }
 
 func limit(n int) int {
-	if n <= 0 || n > 1000 {
+	if n <= 0 {
 		return 100
+	}
+	if n > 5000 {
+		return 5000
 	}
 	return n
 }

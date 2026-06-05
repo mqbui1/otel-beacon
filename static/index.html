@@ -1533,10 +1533,11 @@ async function loadAnomalies() {
 }
 
 function openRCAFromAnomaly(entityId, detectedAtSecs, bucketTs) {
-  // Anchor to start of 30-min incident bucket; use 30-min window to ensure coverage.
-  // Fall back to anomaly detection time if no bucket provided (raw anomaly rows).
-  window._rcaAnomalyTs = bucketTs || detectedAtSecs;
-  window._rcaWindow = bucketTs ? 1800 : null; // 30-min window for incidents
+  // Anchor to the END of the 30-min incident bucket (bucket_ts + 1800) so the
+  // RCA window covers exactly [bucket_ts, bucket_ts+1800] — the full incident range.
+  // For raw anomaly rows (no bucketTs), anchor to the detection time.
+  window._rcaAnomalyTs = bucketTs ? (bucketTs + 1800) : detectedAtSecs;
+  window._rcaWindow = bucketTs ? 1800 : null;
   openRCA(entityId);
   runRCA();
 }
@@ -1927,10 +1928,13 @@ function renderRCAResult(r) {
     const typeLabel = {
       downstream_error: 'Downstream Error', infra_pressure: 'Infra Pressure',
       upstream_spike: 'Traffic Spike', error_signature: 'New Error Pattern',
-      trace_drift: 'New Call Path',
+      trace_drift: 'New Call Path', self_error: 'Self Error Rate',
+      self_infra: 'Self CPU/Memory',
     }[c.cause_type] || c.cause_type;
     const typeColor = c.cause_type === 'error_signature' ? '#f97316'
                     : c.cause_type === 'trace_drift'     ? 'var(--cyan)'
+                    : c.cause_type === 'self_error'      ? 'var(--red)'
+                    : c.cause_type === 'self_infra'      ? '#f97316'
                     : 'var(--muted)';
     return `
     <div style="background:var(--bg);border:1px solid ${i===0?'var(--red)':'var(--border)'};border-radius:8px;padding:12px;margin-bottom:8px">
