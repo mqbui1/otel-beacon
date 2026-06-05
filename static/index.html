@@ -5,19 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OTel Backend</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
   <style>
     :root {
-      --bg:      #0f1117;
-      --surface: #1a1d27;
-      --border:  #2a2d40;
-      --accent:  #6366f1;
+      --bg:      #1b2127;
+      --surface: #1e2730;
+      --surface2:#243040;
+      --border:  #2a3540;
+      --accent:  #4ecfb3;
+      --accent-d:#3ab39a;
       --cyan:    #22d3ee;
-      --text:    #e2e8f0;
-      --muted:   #64748b;
-      --green:   #22c55e;
+      --text:    #dde4ec;
+      --muted:   #7a8fa3;
+      --green:   #4ecfb3;
       --yellow:  #eab308;
       --red:     #ef4444;
       --orange:  #f97316;
+      --purple:  #a78bfa;
     }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; min-height: 100vh; }
@@ -307,13 +311,58 @@
     /* ── Services / Entity Map ── */
     .svc-layout { display: grid; grid-template-columns: 1fr 380px; gap: 16px; align-items: start; }
     .svc-map-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0; overflow: hidden; }
-    .svc-map-title { padding: 12px 16px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
-    .svc-map-svg { display: block; width: 100%; background: rgba(0,0,0,.15); }
-    .svc-node { cursor: pointer; }
-    .svc-node circle { transition: r .15s, stroke .15s; }
-    .svc-node:hover circle { stroke-width: 2.5; }
-    .svc-node text { pointer-events: none; font-size: 11px; fill: #e2e8f0; font-family: 'Segoe UI', system-ui, sans-serif; }
-    .svc-edge { pointer-events: none; }
+    .svc-map-title { padding: 10px 16px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    /* D3 topology container */
+    #topo-container { width: 100%; height: 460px; position: relative; overflow: hidden; background: rgba(0,0,0,.12); border-radius: 0 0 8px 8px; }
+    #topo-container svg { width: 100%; height: 100%; }
+    /* Node states */
+    .topo-node { cursor: pointer; }
+    .topo-node circle { stroke-width: 1.5; transition: filter .2s; }
+    .topo-node circle:hover { filter: brightness(1.3); stroke-width: 2.5; }
+    .topo-node text { font-size: 11px; fill: var(--text); text-anchor: middle; pointer-events: none; font-family: 'Segoe UI', system-ui, sans-serif; }
+    .topo-healthy  circle { fill: #0d2018; stroke: #4ecfb3; }
+    .topo-errorrate circle { fill: #2a0d0d; stroke: #ef4444; }
+    .topo-error    circle { fill: #2a150d; stroke: #f97316; }
+    .topo-drift    circle { fill: #2a2410; stroke: #eab308; }
+    .topo-latency  circle { fill: #24160d; stroke: #f97316; }
+    .topo-new      circle { fill: #1a1a2a; stroke: var(--purple); stroke-dasharray: 4 3; }
+    /* Pulse rings */
+    .topo-pulse { fill: none; stroke-width: 1.5; opacity: 0; }
+    .topo-errorrate .topo-pulse { stroke: #ef4444; animation: tp 1.2s infinite; }
+    .topo-error     .topo-pulse { stroke: #f97316; animation: tp 1.4s infinite; }
+    .topo-drift     .topo-pulse { stroke: #eab308; animation: tp 1.8s infinite; }
+    .topo-latency   .topo-pulse { stroke: #f97316; animation: tp 1.5s infinite; }
+    .topo-new       .topo-pulse { stroke: var(--purple); animation: tp 2.2s infinite; }
+    @keyframes tp { 0%{opacity:.7;r:0} 100%{opacity:0;r:28px} }
+    /* Edges */
+    .topo-edge     { fill:none; stroke:#3a4f60; stroke-width:1.5; stroke-opacity:.8; }
+    .topo-edge-err { fill:none; stroke:#ef4444; stroke-width:2;   stroke-opacity:.9; }
+    /* Legend */
+    .topo-legend { display:flex; gap:12px; padding:8px 16px; background:var(--bg); border-top:1px solid var(--border); flex-wrap:wrap; border-radius:0 0 8px 8px; }
+    .topo-legend-item { display:flex; align-items:center; gap:5px; font-size:10px; color:var(--muted); }
+    .topo-legend-dot { width:9px; height:9px; border-radius:50%; border:1.5px solid; }
+    /* Floating node drawer */
+    #node-drawer {
+      position:absolute; top:12px; left:12px; width:230px; z-index:20; display:none;
+      background:var(--surface2); border:1px solid var(--border); border-radius:8px;
+      padding:12px 14px; box-shadow:0 4px 20px rgba(0,0,0,.5);
+    }
+    .nd-hdr { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+    .nd-name { font-size:13px; font-weight:700; color:var(--text); }
+    .nd-close { background:none; border:none; color:var(--muted); cursor:pointer; font-size:14px; line-height:1; padding:0; }
+    .nd-row { display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid var(--border); font-size:11px; }
+    .nd-row:last-of-type { border-bottom:none; }
+    .nd-lbl { color:var(--muted); }
+    .nd-val { color:var(--text); font-weight:600; }
+    .nd-state-badge { font-size:10px; font-weight:700; padding:1px 7px; border-radius:10px; margin-left:6px; }
+    .nd-btn-row { display:flex; gap:6px; margin-top:10px; }
+    .nd-btn { flex:1; padding:5px 0; border-radius:4px; border:1px solid; cursor:pointer; font-size:11px; font-weight:600; font-family:inherit; background:none; transition:opacity .15s; }
+    .nd-btn:hover { opacity:.75; }
+    .nd-btn-sig { border-color:var(--accent); color:var(--accent); }
+    .nd-btn-rca { border-color:var(--purple); color:var(--purple); }
+    /* Env selector */
+    .env-sel { background:var(--bg); border:1px solid var(--border); color:var(--muted); padding:3px 8px; border-radius:4px; font-size:11px; font-family:inherit; cursor:pointer; }
+    .env-sel:focus { outline:none; border-color:var(--accent); color:var(--text); }
 
     .svc-detail-card {
       background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
@@ -336,7 +385,7 @@
 <body>
 
 <header>
-  <div class="logo"><span>OTel</span><em>Backend</em></div>
+  <div class="logo"><span>OTel</span><em>Beacon</em></div>
   <nav>
     <button class="active" onclick="switchTab('traces',this)">Traces</button>
     <button onclick="switchTab('metrics',this)">Metrics</button>
@@ -620,13 +669,33 @@
       <div class="svc-map-card">
         <div class="svc-map-title">
           <span>Service Topology</span>
-          <span class="dim" id="svc-map-hint">Click a service to explore signals</span>
+          <div style="display:flex;align-items:center;gap:10px">
+            <select id="env-sel" class="env-sel" onchange="switchEnv(this.value)">
+              <option value="">All environments</option>
+            </select>
+            <span class="dim" id="svc-map-hint">—</span>
+          </div>
         </div>
-        <svg class="svc-map-svg" id="svc-map-svg" viewBox="0 0 700 500" preserveAspectRatio="xMidYMid meet">
-          <g id="svc-edges-g"></g>
-          <g id="svc-nodes-g"></g>
-          <text x="350" y="260" text-anchor="middle" fill="#64748b" font-size="13" id="svc-map-empty">Loading service topology…</text>
-        </svg>
+        <div id="topo-container">
+          <div id="node-drawer">
+            <div class="nd-hdr">
+              <span class="nd-name" id="nd-name">—</span>
+              <button class="nd-close" onclick="closeNodeDrawer()">✕</button>
+            </div>
+            <div id="nd-rows"></div>
+            <div class="nd-btn-row">
+              <button class="nd-btn nd-btn-sig" onclick="selectService(window._ndService)">Signals</button>
+              <button class="nd-btn nd-btn-rca" onclick="openRCA(window._ndService)">RCA</button>
+            </div>
+          </div>
+        </div>
+        <div class="topo-legend">
+          <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#4ecfb3"></div>Healthy</div>
+          <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#ef4444"></div>Error Rate</div>
+          <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#f97316"></div>Error Sig</div>
+          <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#eab308"></div>Trace Drift</div>
+          <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#a78bfa;border-style:dashed"></div>New / Latency</div>
+        </div>
       </div>
 
       <!-- Service list below map -->
@@ -1543,16 +1612,49 @@ function openRCAFromAnomaly(entityId, detectedAtSecs, bucketTs) {
 }
 
 // ── Services / Entity Map ───────────────────────────────────────────────────
-let _svcEntities = [];
-let _svcEdges    = [];
+let _svcEntities     = [];
+let _svcEdges        = [];
+let _anomalyByEntity = {}; // entityId → worst signal_type
+let _currentEnv      = '';
+let _d3Simulation    = null;
+window._ndService    = null;
+
+async function loadEnvironments() {
+  const res = await api('/v1/environments');
+  const envs = res?.environments || [];
+  const sel = document.getElementById('env-sel');
+  if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">All environments</option>' +
+    envs.map(e => `<option value="${esc(e)}"${e===cur?' selected':''}>${esc(e)}</option>`).join('');
+}
+
+function switchEnv(env) {
+  _currentEnv = env;
+  loadServices();
+}
 
 async function loadServices() {
-  const [entRes, topoRes] = await Promise.all([
-    api('/v1/entities?type=service'),
+  await loadEnvironments();
+  const envParam = _currentEnv ? `&env=${encodeURIComponent(_currentEnv)}` : '';
+  const [entRes, topoRes, anomRes] = await Promise.all([
+    api('/v1/entities?type=service' + envParam),
     api('/v1/topology'),
+    api('/v1/query/anomalies?limit=500'),
   ]);
   _svcEntities = entRes?.data  || [];
   _svcEdges    = topoRes?.data || [];
+
+  // Build anomaly health map (highest-priority signal wins per entity)
+  const sigPrio = {error_signature:5, span_error_rate:4, trace_drift:3, span_latency:2, metric:1};
+  _anomalyByEntity = {};
+  (anomRes?.data || []).forEach(a => {
+    if (!a.entity_id) return;
+    const cur = _anomalyByEntity[a.entity_id];
+    if (!cur || (sigPrio[a.signal_type]||0) > (sigPrio[cur]||0)) {
+      _anomalyByEntity[a.entity_id] = a.signal_type;
+    }
+  });
 
   // Stats
   const errEdges = _svcEdges.filter(e => e.call_count > 0 && e.error_count / e.call_count > 0.05).length;
@@ -1564,97 +1666,113 @@ async function loadServices() {
   renderServiceTable(_svcEntities, _svcEdges);
 }
 
-function renderServiceMap(entities, edges) {
-  const W = 700, H = 500, CX = W / 2, CY = H / 2;
-  const emptyEl = document.getElementById('svc-map-empty');
+function nodeHealthState(entityId) {
+  const sig = _anomalyByEntity[entityId];
+  if (!sig) return 'topo-healthy';
+  if (sig === 'span_error_rate') return 'topo-errorrate';
+  if (sig === 'error_signature') return 'topo-error';
+  if (sig === 'trace_drift')     return 'topo-drift';
+  if (sig === 'span_latency')    return 'topo-latency';
+  return 'topo-new';
+}
 
+function renderServiceMap(entities, edges) {
+  const container = document.getElementById('topo-container');
+  container.querySelector('svg')?.remove();
+  const hint = document.getElementById('svc-map-hint');
   if (!entities.length) {
-    document.getElementById('svc-edges-g').innerHTML = '';
-    document.getElementById('svc-nodes-g').innerHTML = '';
-    emptyEl.textContent = 'No services discovered yet — waiting for traces…';
-    emptyEl.style.display = '';
+    hint.textContent = 'No services discovered yet — waiting for traces…';
     return;
   }
-  emptyEl.style.display = 'none';
+  hint.textContent = `${entities.length} services · ${edges.length} edges`;
 
-  // Position nodes on a circle (or grid for few/many nodes)
-  const n = entities.length;
-  const R = Math.min(180, Math.max(120, n * 22)); // ring radius
-  const positions = {};
-  entities.forEach((e, i) => {
-    const angle = (2 * Math.PI * i / n) - Math.PI / 2;
-    positions[e.entity_id] = {
-      x: CX + R * Math.cos(angle),
-      y: CY + R * Math.sin(angle),
-    };
+  const W = container.clientWidth || 700, H = 460;
+  const svg = d3.select(container).append('svg').attr('width', W).attr('height', H);
+
+  // Arrow markers
+  const defs = svg.append('defs');
+  [['green','#4ecfb3'],['orange','#f97316'],['red','#ef4444']].forEach(([id, color]) => {
+    defs.append('marker').attr('id','arr-'+id)
+      .attr('markerWidth',6).attr('markerHeight',6)
+      .attr('refX',5).attr('refY',3).attr('orient','auto')
+      .append('path').attr('d','M0,0 L0,6 L6,3 Z').attr('fill',color);
   });
 
-  // Build edge index for error rate coloring
-  const edgeMap = {};
-  edges.forEach(e => {
-    edgeMap[e.source_service + '→' + e.target_service] = e;
+  const g = svg.append('g');
+  svg.call(d3.zoom().scaleExtent([0.3,3]).on('zoom', e => g.attr('transform', e.transform)));
+
+  const nodeSet = new Set(entities.map(e => e.entity_id));
+  const nodes   = entities.map(e => ({id: e.entity_id, last_seen_ns: e.last_seen_ns}));
+  const links   = edges
+    .filter(e => nodeSet.has(e.source_service) && nodeSet.has(e.target_service))
+    .map(e => ({
+      source:     e.source_service,
+      target:     e.target_service,
+      err_rate:   e.call_count > 0 ? e.error_count / e.call_count : 0,
+      call_count: e.call_count,
+    }));
+
+  if (_d3Simulation) _d3Simulation.stop();
+  _d3Simulation = d3.forceSimulation(nodes)
+    .force('link',    d3.forceLink(links).id(d => d.id).distance(130))
+    .force('charge',  d3.forceManyBody().strength(-320))
+    .force('center',  d3.forceCenter(W / 2, H / 2))
+    .force('collide', d3.forceCollide(46));
+
+  // Edges
+  const link = g.append('g').selectAll('line').data(links).enter().append('line')
+    .attr('class', d => d.err_rate > 0.05 ? 'topo-edge-err' : 'topo-edge')
+    .attr('marker-end', d => d.err_rate > 0.1 ? 'url(#arr-red)' : d.err_rate > 0.02 ? 'url(#arr-orange)' : 'url(#arr-green)');
+
+  // Nodes
+  const node = g.append('g').selectAll('g').data(nodes).enter().append('g')
+    .attr('class', d => 'topo-node ' + nodeHealthState(d.id))
+    .call(d3.drag()
+      .on('start', (ev, d) => { if (!ev.active) _d3Simulation.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
+      .on('drag',  (ev, d) => { d.fx=ev.x; d.fy=ev.y; })
+      .on('end',   (ev, d) => { if (!ev.active) _d3Simulation.alphaTarget(0); d.fx=null; d.fy=null; }))
+    .on('click', (ev, d) => { ev.stopPropagation(); openNodeDrawer(d); });
+
+  node.append('circle').attr('r', 24);
+  node.append('circle').attr('class', 'topo-pulse').attr('r', 0);
+  node.append('text').attr('dy', '4px').text(d => d.id.replace('spring-petclinic-','').slice(0,14));
+
+  _d3Simulation.on('tick', () => {
+    link
+      .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    node.attr('transform', d => `translate(${d.x},${d.y})`);
   });
 
-  // Render edges first
-  let edgesHtml = '';
-  edges.forEach(e => {
-    const src = positions[e.source_service];
-    const dst = positions[e.target_service];
-    if (!src || !dst) return;
+  svg.on('click', () => closeNodeDrawer());
+}
 
-    const errRate = e.call_count > 0 ? e.error_count / e.call_count : 0;
-    const color = errRate > 0.1 ? '#ef4444' : errRate > 0.02 ? '#f97316' : '#22c55e';
-    const opacity = Math.min(0.9, 0.4 + (e.call_count / 100) * 0.5);
+function openNodeDrawer(d) {
+  window._ndService = d.id;
+  const state  = nodeHealthState(d.id);
+  const stateLabels = {
+    'topo-healthy':'Healthy','topo-errorrate':'Error Rate','topo-error':'Error Sig',
+    'topo-drift':'Trace Drift','topo-latency':'Latency','topo-new':'New',
+  };
+  const stateColors = {
+    'topo-healthy':'#4ecfb3','topo-errorrate':'#ef4444','topo-error':'#f97316',
+    'topo-drift':'#eab308','topo-latency':'#f97316','topo-new':'#a78bfa',
+  };
+  const color = stateColors[state] || '#7a8fa3';
+  const label = stateLabels[state] || state;
+  document.getElementById('nd-name').innerHTML =
+    `${esc(d.id)} <span class="nd-state-badge" style="background:${color}22;color:${color}">${label}</span>`;
+  document.getElementById('nd-rows').innerHTML = `
+    <div class="nd-row"><span class="nd-lbl">Last seen</span><span class="nd-val">${d.last_seen_ns ? fmtTime(d.last_seen_ns) : '—'}</span></div>
+    <div class="nd-row"><span class="nd-lbl">Inbound</span><span class="nd-val">${_svcEdges.filter(e=>e.target_service===d.id).length}</span></div>
+    <div class="nd-row"><span class="nd-lbl">Outbound</span><span class="nd-val">${_svcEdges.filter(e=>e.source_service===d.id).length}</span></div>
+    <div class="nd-row"><span class="nd-lbl">Signal</span><span class="nd-val" style="color:${color}">${esc(_anomalyByEntity[d.id]||'none')}</span></div>`;
+  document.getElementById('node-drawer').style.display = 'block';
+}
 
-    // Draw line with arrow marker
-    const dx = dst.x - src.x, dy = dst.y - src.y;
-    const len = Math.sqrt(dx*dx + dy*dy) || 1;
-    const nx = dx/len, ny = dy/len;
-    const nodeR = 24;
-    const x1 = src.x + nx * nodeR, y1 = src.y + ny * nodeR;
-    const x2 = dst.x - nx * (nodeR + 8), y2 = dst.y - ny * (nodeR + 8);
-
-    // Midpoint label
-    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-    const calls = e.call_count >= 1000 ? (e.call_count/1000).toFixed(1)+'k' : String(e.call_count);
-
-    edgesHtml += `
-      <g class="svc-edge">
-        <line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}"
-          stroke="${color}" stroke-width="1.5" stroke-opacity="${opacity}"
-          marker-end="url(#arrow-${color === '#ef4444' ? 'red' : color === '#f97316' ? 'orange' : 'green'})"/>
-        <text x="${mx.toFixed(1)}" y="${(my - 4).toFixed(1)}" text-anchor="middle"
-          font-size="9" fill="${color}" fill-opacity="0.8">${calls}</text>
-      </g>`;
-  });
-
-  // Render nodes
-  let nodesHtml = '';
-  entities.forEach(e => {
-    const pos = positions[e.entity_id];
-    if (!pos) return;
-    const label = e.entity_id.replace('spring-petclinic-', '').slice(0, 18);
-    const isActive = new Date() - new Date(e.last_seen_ns / 1e6) < 5 * 60 * 1000; // seen in last 5 min
-    const nodeColor = isActive ? '#6366f1' : '#374151';
-    const strokeColor = isActive ? '#818cf8' : '#4b5563';
-
-    nodesHtml += `
-      <g class="svc-node" onclick="selectService('${esc(e.entity_id)}')" id="svcnode-${esc(e.entity_id)}">
-        <circle cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="24"
-          fill="${nodeColor}" stroke="${strokeColor}" stroke-width="1.5"/>
-        <text x="${pos.x.toFixed(1)}" y="${(pos.y - 2).toFixed(1)}" text-anchor="middle" dominant-baseline="middle"
-          style="font-size:10px;font-weight:600">${esc(label)}</text>
-      </g>`;
-  });
-
-  document.getElementById('svc-edges-g').innerHTML = `
-    <defs>
-      <marker id="arrow-green"  markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 Z" fill="#22c55e"/></marker>
-      <marker id="arrow-orange" markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 Z" fill="#f97316"/></marker>
-      <marker id="arrow-red"    markerWidth="6" markerHeight="6" refX="3" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 Z" fill="#ef4444"/></marker>
-    </defs>
-    ${edgesHtml}`;
-  document.getElementById('svc-nodes-g').innerHTML = nodesHtml;
+function closeNodeDrawer() {
+  document.getElementById('node-drawer').style.display = 'none';
+  window._ndService = null;
 }
 
 function renderServiceTable(entities, edges) {
@@ -1691,11 +1809,7 @@ function renderServiceTable(entities, edges) {
 }
 
 async function selectService(serviceId) {
-  // Highlight node
-  document.querySelectorAll('.svc-node circle').forEach(c => c.setAttribute('stroke-width','1.5'));
-  const node = document.getElementById('svcnode-' + serviceId);
-  if (node) node.querySelector('circle').setAttribute('stroke-width','3');
-
+  if (!serviceId) return;
   document.getElementById('svc-detail-name').textContent = serviceId;
   document.getElementById('svc-detail-meta').textContent = 'Loading signals…';
   document.getElementById('svc-detail-body').innerHTML = '<div class="svc-empty">Loading…</div>';

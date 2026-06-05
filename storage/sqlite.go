@@ -42,6 +42,7 @@ func (b *SQLiteBackend) migrateSchema(ctx context.Context) {
 		`ALTER TABLE anomalies ADD COLUMN detector_name TEXT DEFAULT ''`,
 		`ALTER TABLE anomalies ADD COLUMN severity TEXT DEFAULT 'warning'`,
 		`ALTER TABLE anomalies ADD COLUMN description TEXT DEFAULT ''`,
+		`ALTER TABLE entities ADD COLUMN environment TEXT DEFAULT ''`,
 	}
 	for _, m := range migrations {
 		b.db.ExecContext(ctx, m) // ignore "duplicate column" errors
@@ -550,9 +551,10 @@ func limit(n int) int {
 func (b *SQLiteBackend) UpsertEntities(ctx context.Context, entities []EntityRow) error {
 	return b.inTx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.PrepareContext(ctx, `
-			INSERT INTO entities (entity_type, entity_id, attrs, last_seen_ns)
-			VALUES (?, ?, ?, ?)
+			INSERT INTO entities (entity_type, entity_id, environment, attrs, last_seen_ns)
+			VALUES (?, ?, ?, ?, ?)
 			ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+				environment  = excluded.environment,
 				attrs        = excluded.attrs,
 				last_seen_ns = MAX(entities.last_seen_ns, excluded.last_seen_ns)`)
 		if err != nil {
@@ -560,7 +562,7 @@ func (b *SQLiteBackend) UpsertEntities(ctx context.Context, entities []EntityRow
 		}
 		defer stmt.Close()
 		for _, e := range entities {
-			if _, err := stmt.ExecContext(ctx, e.EntityType, e.EntityID, e.Attrs, e.LastSeenNs); err != nil {
+			if _, err := stmt.ExecContext(ctx, e.EntityType, e.EntityID, e.Environment, e.Attrs, e.LastSeenNs); err != nil {
 				return err
 			}
 		}
@@ -590,20 +592,21 @@ func (b *SQLiteBackend) RefreshTopology(ctx context.Context) error {
 	return err
 }
 
-func (b *SQLiteBackend) QueryEntities(ctx context.Context, entityType string) ([]EntityRow, error) {
-	var (
-		rows *sql.Rows
-		err  error
-	)
+func (b *SQLiteBackend) QueryEntities(ctx context.Context, entityType, env string) ([]EntityRow, error) {
+	where := "WHERE 1=1"
+	var args []any
 	if entityType != "" {
-		rows, err = b.db.QueryContext(ctx,
-			`SELECT entity_type, entity_id, attrs, last_seen_ns FROM entities
-			 WHERE entity_type = ? ORDER BY last_seen_ns DESC`, entityType)
-	} else {
-		rows, err = b.db.QueryContext(ctx,
-			`SELECT entity_type, entity_id, attrs, last_seen_ns FROM entities
-			 ORDER BY entity_type, last_seen_ns DESC`)
+		where += " AND entity_type = ?"
+		args = append(args, entityType)
 	}
+	if env != "" {
+		where += " AND environment = ?"
+		args = append(args, env)
+	}
+	rows, err := b.db.QueryContext(ctx,
+		`SELECT entity_type, entity_id, COALESCE(environment,''), attrs, last_seen_ns FROM entities
+		 `+where+` ORDER BY last_seen_ns DESC`,
+		args...)
 	if err != nil {
 		return nil, err
 	}
@@ -611,10 +614,29 @@ func (b *SQLiteBackend) QueryEntities(ctx context.Context, entityType string) ([
 	var out []EntityRow
 	for rows.Next() {
 		var r EntityRow
-		if err := rows.Scan(&r.EntityType, &r.EntityID, &r.Attrs, &r.LastSeenNs); err != nil {
+		if err := rows.Scan(&r.EntityType, &r.EntityID, &r.Environment, &r.Attrs, &r.LastSeenNs); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (b *SQLiteBackend) QueryEnvironments(ctx context.Context) ([]string, error) {
+	rows, err := b.db.QueryContext(ctx,
+		`SELECT DISTINCT environment FROM entities
+		 WHERE environment != '' ORDER BY environment`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var env string
+		if err := rows.Scan(&env); err != nil {
+			return nil, err
+		}
+		out = append(out, env)
 	}
 	return out, rows.Err()
 }

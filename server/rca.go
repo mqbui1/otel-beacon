@@ -100,7 +100,7 @@ func (s *queryServer) rca(w http.ResponseWriter, r *http.Request) {
 	toNs := incidentTs
 
 	// Load all service entities once — avoids repeated DB calls in co-location checks
-	allEntities, _ := s.store.QueryEntities(ctx, "service")
+	allEntities, _ := s.store.QueryEntities(ctx, "service", "")
 	attrsMap := buildEntityAttrsMap(allEntities)
 
 	// k8s filter attrs for the focal entity (pod + deployment only — no node/namespace)

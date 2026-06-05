@@ -20,30 +20,65 @@ def post(path, body):
         print(f"  warn: {path} -> {e}")
 
 # ── Traces ────────────────────────────────────────────────────────────────────
-def send_traces(svc, error=False):
-    trace_id = uid(16)
-    span_id  = uid(8)
-    t = ns()
-    duration = random.randint(5_000_000, 80_000_000)  # 5-80ms
-    status_code = 2 if error else 1
-    body = {"resourceSpans": [{"resource": {"attributes": [
+# Topology: frontend → cart-service → inventory-service
+#                    → payment-service
+#           frontend → shipping-service
+CALL_GRAPH = {
+    "frontend":           ["cart-service", "payment-service", "shipping-service"],
+    "cart-service":       ["inventory-service"],
+    "payment-service":    [],
+    "inventory-service":  [],
+    "shipping-service":   [],
+}
+
+def make_resource_attrs(svc):
+    node = "node-1" if svc in ("frontend", "payment-service") else "node-2"
+    return [
         {"key": "service.name",        "value": {"stringValue": svc}},
         {"key": "k8s.pod.name",        "value": {"stringValue": f"{svc}-pod-abc"}},
         {"key": "k8s.deployment.name", "value": {"stringValue": svc}},
         {"key": "k8s.namespace.name",  "value": {"stringValue": "default"}},
-        {"key": "k8s.node.name",       "value": {"stringValue": "node-1" if svc in ("frontend","payment-service") else "node-2"}},
-    ]}, "scopeSpans": [{"scope": {"name": "test"}, "spans": [{
-        "traceId":       trace_id,
-        "spanId":        span_id,
-        "parentSpanId":  "0000000000000000",
-        "name":          f"{svc}/handle",
-        "kind":          2,
+        {"key": "k8s.node.name",       "value": {"stringValue": node}},
+    ]
+
+def send_traces(svc, error=False):
+    """Send a root span for svc plus child spans for each downstream call."""
+    trace_id = uid(16)
+    root_span_id = uid(8)
+    t = ns()
+    root_dur = random.randint(20_000_000, 120_000_000)
+    status_code = 2 if error else 1
+
+    resource_spans = [{"resource": {"attributes": make_resource_attrs(svc)}, "scopeSpans": [{"scope": {"name": "test"}, "spans": [{
+        "traceId":           trace_id,
+        "spanId":            root_span_id,
+        "parentSpanId":      "0000000000000000",
+        "name":              f"{svc}/handle",
+        "kind":              2,  # SERVER
         "startTimeUnixNano": str(t),
-        "endTimeUnixNano":   str(t + duration),
-        "status": {"code": status_code, "message": "error" if error else ""},
-        "attributes": [{"key": "http.method", "value": {"stringValue": "POST"}}],
-    }]}]}]}
-    post("/v1/traces", body)
+        "endTimeUnixNano":   str(t + root_dur),
+        "status":            {"code": status_code, "message": "error" if error else ""},
+        "attributes":        [{"key": "http.method", "value": {"stringValue": "POST"}}],
+    }]}]}]
+
+    # Add CLIENT spans for each downstream service (creates cross-service topology edges)
+    for downstream in CALL_GRAPH.get(svc, []):
+        child_span_id = uid(8)
+        child_dur = random.randint(5_000_000, 60_000_000)
+        child_err = error and (downstream == "payment-service")
+        resource_spans.append({"resource": {"attributes": make_resource_attrs(downstream)}, "scopeSpans": [{"scope": {"name": "test"}, "spans": [{
+            "traceId":           trace_id,
+            "spanId":            child_span_id,
+            "parentSpanId":      root_span_id,
+            "name":              f"{downstream}/handle",
+            "kind":              2,  # SERVER
+            "startTimeUnixNano": str(t + random.randint(1_000_000, 5_000_000)),
+            "endTimeUnixNano":   str(t + child_dur),
+            "status":            {"code": 2 if child_err else 1, "message": "error" if child_err else ""},
+            "attributes":        [{"key": "http.method", "value": {"stringValue": "GET"}}],
+        }]}]})
+
+    post("/v1/traces", {"resourceSpans": resource_spans})
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 def send_metrics(svc, cpu_spike=False, mem_spike=False):

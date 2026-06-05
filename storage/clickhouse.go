@@ -282,7 +282,10 @@ func (b *ClickHouseBackend) DeleteBefore(_ context.Context, _ int64) error { ret
 // Entity / topology — no-op stubs for ClickHouse (SQLite-only feature for now).
 func (b *ClickHouseBackend) UpsertEntities(_ context.Context, _ []EntityRow) error { return nil }
 func (b *ClickHouseBackend) RefreshTopology(_ context.Context) error                { return nil }
-func (b *ClickHouseBackend) QueryEntities(_ context.Context, _ string) ([]EntityRow, error) {
+func (b *ClickHouseBackend) QueryEntities(_ context.Context, _, _ string) ([]EntityRow, error) {
+	return nil, nil
+}
+func (b *ClickHouseBackend) QueryEnvironments(_ context.Context) ([]string, error) {
 	return nil, nil
 }
 func (b *ClickHouseBackend) QueryTopology(_ context.Context) ([]TopologyEdge, error) {

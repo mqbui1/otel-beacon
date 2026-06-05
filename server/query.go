@@ -31,6 +31,7 @@ func NewQueryServer(store *storage.Storage, logger *zap.Logger) http.Handler {
 	mux.HandleFunc("/v1/query/logs", s.logs)
 	mux.HandleFunc("/v1/query/anomalies", s.anomalies)
 	mux.HandleFunc("/v1/entities", s.entities)
+	mux.HandleFunc("/v1/environments", s.environments)
 	mux.HandleFunc("/v1/topology", s.topology)
 	mux.HandleFunc("/v1/entity/signals", s.entitySignals)
 	mux.HandleFunc("/v1/rca", s.rca)
@@ -100,8 +101,19 @@ func (s *queryServer) anomalies(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *queryServer) entities(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.store.QueryEntities(r.Context(), r.URL.Query().Get("type"))
+	rows, err := s.store.QueryEntities(r.Context(), r.URL.Query().Get("type"), r.URL.Query().Get("env"))
 	writeJSON(w, rows, err, s.logger)
+}
+
+func (s *queryServer) environments(w http.ResponseWriter, r *http.Request) {
+	envs, err := s.store.QueryEnvironments(r.Context())
+	if err != nil {
+		s.logger.Error("query environments", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"environments": envs})
 }
 
 func (s *queryServer) topology(w http.ResponseWriter, r *http.Request) {
@@ -308,7 +320,7 @@ func entityK8sAttrs(ctx context.Context, store *storage.Storage, service string)
 	if service == "" {
 		return nil
 	}
-	entities, err := store.QueryEntities(ctx, "service")
+	entities, err := store.QueryEntities(ctx, "service", "")
 	if err != nil {
 		return nil
 	}

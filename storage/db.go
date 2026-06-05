@@ -179,8 +179,12 @@ func (s *Storage) QueryAnomalies(ctx context.Context, lim int) ([]AnomalyRow, er
 	return s.backend.QueryAnomalies(ctx, lim)
 }
 
-func (s *Storage) QueryEntities(ctx context.Context, entityType string) ([]EntityRow, error) {
-	return s.backend.QueryEntities(ctx, entityType)
+func (s *Storage) QueryEntities(ctx context.Context, entityType, env string) ([]EntityRow, error) {
+	return s.backend.QueryEntities(ctx, entityType, env)
+}
+
+func (s *Storage) QueryEnvironments(ctx context.Context) ([]string, error) {
+	return s.backend.QueryEnvironments(ctx)
 }
 
 func (s *Storage) QueryTopology(ctx context.Context) ([]TopologyEdge, error) {
@@ -486,6 +490,7 @@ func extractEntities(batch []SpanRow) []EntityRow {
 		if err := json.Unmarshal([]byte(r.ResourceAttrs), &attrs); err != nil {
 			continue
 		}
+		env, _ := attrs["deployment.environment"].(string)
 		for _, pair := range []struct{ t, k string }{
 			{"service", "service.name"},
 			{"host", "host.name"},
@@ -497,10 +502,11 @@ func extractEntities(batch []SpanRow) []EntityRow {
 			k := key{pair.t, id}
 			if existing, ok := seen[k]; !ok || r.StartNs > existing.LastSeenNs {
 				seen[k] = EntityRow{
-					EntityType: pair.t,
-					EntityID:   id,
-					Attrs:      r.ResourceAttrs,
-					LastSeenNs: r.StartNs,
+					EntityType:  pair.t,
+					EntityID:    id,
+					Environment: env,
+					Attrs:       r.ResourceAttrs,
+					LastSeenNs:  r.StartNs,
 				}
 			}
 		}

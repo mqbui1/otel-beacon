@@ -84,6 +84,7 @@ type ErrorSignatureRow struct {
 type EntityRow struct {
 	EntityType  string `json:"entity_type"`  // "service", "host"
 	EntityID    string `json:"entity_id"`    // service name or hostname
+	Environment string `json:"environment"`  // deployment.environment resource attr
 	Attrs       string `json:"attrs"`        // JSON extra resource attributes
 	LastSeenNs  int64  `json:"last_seen_ns"`
 }
@@ -159,7 +160,8 @@ type Backend interface {
 	// Entity / topology
 	UpsertEntities(ctx context.Context, entities []EntityRow) error
 	RefreshTopology(ctx context.Context) error
-	QueryEntities(ctx context.Context, entityType string) ([]EntityRow, error)
+	QueryEntities(ctx context.Context, entityType, env string) ([]EntityRow, error)
+	QueryEnvironments(ctx context.Context) ([]string, error)
 	QueryTopology(ctx context.Context) ([]TopologyEdge, error)
 
 	// DeleteBefore removes rows older than cutoffUnix (Unix seconds).
