@@ -1484,7 +1484,7 @@ async function loadIncidents() {
       <td><span class="badge b-info">${inc.anomaly_count}</span></td>
       <td class="dim mono" style="font-size:11px;white-space:nowrap">${windowStr}</td>
       <td class="dim mono">${latestStr}</td>
-      <td><button class="btn-rca-sm" onclick="openRCAFromAnomaly('${esc(inc.entity_id)}',${inc.latest_ts})">Analyze</button></td>
+      <td><button class="btn-rca-sm" onclick="openRCAFromAnomaly('${esc(inc.entity_id)}',${inc.latest_ts},${inc.bucket_ts})">Analyze</button></td>
     </tr>`;
   }).join('');
 }
@@ -1532,8 +1532,11 @@ async function loadAnomalies() {
   }).join('');
 }
 
-function openRCAFromAnomaly(entityId, detectedAtSecs) {
-  window._rcaAnomalyTs = detectedAtSecs;
+function openRCAFromAnomaly(entityId, detectedAtSecs, bucketTs) {
+  // Anchor to start of 30-min incident bucket; use 30-min window to ensure coverage.
+  // Fall back to anomaly detection time if no bucket provided (raw anomaly rows).
+  window._rcaAnomalyTs = bucketTs || detectedAtSecs;
+  window._rcaWindow = bucketTs ? 1800 : null; // 30-min window for incidents
   openRCA(entityId);
   setTimeout(runRCA, 100);
 }
@@ -1809,9 +1812,11 @@ function closeRCA() {
 
 async function runRCA(withAI) {
   if (!_rcaEntityID) return;
-  const win = document.getElementById('rca-window-sel').value;
+  // Use window override from incident (30 min) or the UI selector
+  const win = window._rcaWindow || document.getElementById('rca-window-sel').value;
+  window._rcaWindow = null; // consume once
   document.getElementById('rca-body').innerHTML = '<div class="empty">Analyzing…</div>';
-  // If triggered from an anomaly, anchor the window to the anomaly timestamp
+  // If triggered from an anomaly/incident, anchor the window to that timestamp
   const tsParam = window._rcaAnomalyTs ? `&ts=${window._rcaAnomalyTs}` : '';
   const url = `/v1/rca?entity=${encodeURIComponent(_rcaEntityID)}&window=${win}${tsParam}${withAI ? '&ai=true' : ''}`;
   window._rcaAnomalyTs = null; // consume once
@@ -1919,20 +1924,53 @@ function renderRCAResult(r) {
   const causeCards = (r.candidate_causes || []).map((c, i) => {
     const pct = Math.round(c.confidence * 100);
     const confColor = pct >= 70 ? 'var(--red)' : pct >= 45 ? '#f97316' : '#eab308';
-    const typeLabel = { downstream_error: 'Downstream Error', infra_pressure: 'Infra Pressure', upstream_spike: 'Traffic Spike' }[c.cause_type] || c.cause_type;
+    const typeLabel = {
+      downstream_error: 'Downstream Error', infra_pressure: 'Infra Pressure',
+      upstream_spike: 'Traffic Spike', error_signature: 'New Error Pattern',
+    }[c.cause_type] || c.cause_type;
+    const typeColor = c.cause_type === 'error_signature' ? '#f97316' : 'var(--muted)';
     return `
     <div style="background:var(--bg);border:1px solid ${i===0?'var(--red)':'var(--border)'};border-radius:8px;padding:12px;margin-bottom:8px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           ${i===0?'<span style="background:#ef444422;color:#ef4444;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:700">TOP CANDIDATE</span>':''}
           <span style="font-weight:600;font-size:13px;font-family:monospace">${esc(c.entity_id)}</span>
-          <span style="background:var(--surface);color:var(--muted);padding:2px 6px;border-radius:4px;font-size:10px">${esc(typeLabel)}</span>
+          <span style="background:var(--surface);color:${typeColor};padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600">${esc(typeLabel)}</span>
         </div>
         <span style="font-size:20px;font-weight:700;color:${confColor};flex-shrink:0">${pct}%</span>
       </div>
       <div style="font-size:12px;color:var(--muted)">${esc(c.evidence)}</div>
     </div>`;
   }).join('');
+
+  // Error signature detail table (shown when error_signature signals are present)
+  const errSigRows = (r.error_signatures || []).filter(s => !s.is_baseline);
+  const errSigTable = errSigRows.length ? `
+    <div style="margin-top:16px">
+      <div style="font-size:10px;font-weight:600;color:var(--orange);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">
+        ⚠ New Error Patterns (${errSigRows.length})
+      </div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;overflow:hidden">
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead><tr style="background:rgba(255,255,255,.03)">
+            <th style="padding:6px 10px;text-align:left;color:var(--muted);font-weight:500">Error Type</th>
+            <th style="padding:6px 10px;text-align:left;color:var(--muted);font-weight:500">Operation</th>
+            <th style="padding:6px 10px;text-align:left;color:var(--muted);font-weight:500">HTTP</th>
+            <th style="padding:6px 10px;text-align:right;color:var(--muted);font-weight:500">Count</th>
+            <th style="padding:6px 10px;text-align:left;color:var(--muted);font-weight:500">First Seen</th>
+          </tr></thead>
+          <tbody>
+            ${errSigRows.map(s => `<tr style="border-top:1px solid rgba(255,255,255,.04)">
+              <td style="padding:5px 10px;font-family:monospace;color:#f97316">${esc(s.error_type||'—')}</td>
+              <td style="padding:5px 10px;font-family:monospace;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.operation)}">${esc(s.operation||'—')}</td>
+              <td style="padding:5px 10px;font-family:monospace">${esc(s.http_status||'—')}</td>
+              <td style="padding:5px 10px;text-align:right;font-family:monospace">${s.occurrence_count||0}</td>
+              <td style="padding:5px 10px;color:var(--muted)">${s.first_seen_at ? new Date(s.first_seen_at/1e6).toLocaleTimeString() : '—'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>` : '';
 
   return `
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
@@ -1951,6 +1989,7 @@ function renderRCAResult(r) {
     <div>
       <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Candidate Causes</div>
       ${causeCards || '<div style="color:var(--muted);font-size:12px;padding:8px 0">No strong candidates found — service may be the origin, or insufficient data in the window.</div>'}
+      ${errSigTable}
       <div style="margin-top:16px">
         <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">AI Summary</div>
         <div id="rca-narrative" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;color:var(--muted)">

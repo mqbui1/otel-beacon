@@ -48,16 +48,17 @@ type CauseCandidate struct {
 }
 
 type RCAResult struct {
-	Entity          string           `json:"entity"`
-	IncidentTs      int64            `json:"incident_ts"`
-	WindowSecs      int              `json:"window_secs"`
-	Health          EntityHealth     `json:"health"`
-	Baseline        EntityHealth     `json:"baseline"` // health in previous window (before incident)
-	Upstream        []NeighborHealth `json:"upstream"`
-	Downstream      []NeighborHealth `json:"downstream"`
-	CoLocated       []NeighborHealth `json:"co_located"`
-	CandidateCauses []CauseCandidate `json:"candidate_causes"`
-	Narrative       string           `json:"narrative,omitempty"`
+	Entity          string                       `json:"entity"`
+	IncidentTs      int64                        `json:"incident_ts"`
+	WindowSecs      int                          `json:"window_secs"`
+	Health          EntityHealth                 `json:"health"`
+	Baseline        EntityHealth                 `json:"baseline"` // health in previous window (before incident)
+	Upstream        []NeighborHealth             `json:"upstream"`
+	Downstream      []NeighborHealth             `json:"downstream"`
+	CoLocated       []NeighborHealth             `json:"co_located"`
+	CandidateCauses []CauseCandidate             `json:"candidate_causes"`
+	ErrorSignatures []storage.ErrorSignatureRow  `json:"error_signatures,omitempty"`
+	Narrative       string                       `json:"narrative,omitempty"`
 }
 
 // ─── HTTP handler ─────────────────────────────────────────────────────────────
@@ -123,6 +124,28 @@ func (s *queryServer) rca(w http.ResponseWriter, r *http.Request) {
 
 	candidates := rankCauses(health, baseline, upstream, downstream, coLocated)
 
+	// Error signatures: new / spiking error patterns for the focal entity
+	errorSigs, _ := s.store.QueryErrorSignatures(ctx, entityID)
+	for _, sig := range errorSigs {
+		if sig.IsBaseline {
+			continue // known pattern, not novel
+		}
+		conf := math.Min(0.9, 0.6+math.Min(0.3, float64(sig.OccurrenceCount)/10))
+		errType := sig.ErrorType
+		if errType == "" {
+			errType = "unknown"
+		}
+		candidates = append(candidates, CauseCandidate{
+			EntityID:  entityID,
+			CauseType: "error_signature",
+			Confidence: conf,
+			Evidence: fmt.Sprintf("new error pattern: type=%s op=%s (seen %d times, first at %s)",
+				errType, sig.Operation, sig.OccurrenceCount,
+				time.Unix(sig.FirstSeenAt/1_000_000_000, 0).UTC().Format("15:04:05")),
+		})
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Confidence > candidates[j].Confidence })
+
 	result := RCAResult{
 		Entity:          entityID,
 		IncidentTs:      incidentTs,
@@ -133,6 +156,7 @@ func (s *queryServer) rca(w http.ResponseWriter, r *http.Request) {
 		Downstream:      downstream,
 		CoLocated:       coLocated,
 		CandidateCauses: candidates,
+		ErrorSignatures: errorSigs,
 	}
 
 	if withAI {

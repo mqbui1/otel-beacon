@@ -187,6 +187,14 @@ func (s *Storage) QueryTopology(ctx context.Context) ([]TopologyEdge, error) {
 	return s.backend.QueryTopology(ctx)
 }
 
+func (s *Storage) QueryErrorSignatures(ctx context.Context, service string) ([]ErrorSignatureRow, error) {
+	return s.backend.QueryErrorSignatures(ctx, service)
+}
+
+func (s *Storage) QueryTraceFingerprints(ctx context.Context, service string) ([]TraceFingerprintRow, error) {
+	return s.backend.QueryTraceFingerprints(ctx, service)
+}
+
 // ---------------------------------------------------------------------------
 // Public insert methods — extract from pdata, enqueue, return immediately.
 // ---------------------------------------------------------------------------
