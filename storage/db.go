@@ -243,6 +243,9 @@ func (s *Storage) InsertMetrics(_ context.Context, md pmetric.Metrics) error {
 
 func (s *Storage) enqueueMetric(resJSON string, m pmetric.Metric) {
 	entityID := extractServiceName(resJSON)
+	// Skip anomaly detection for monotonic counters (e.g. cpu.time, pod.cpu.time).
+	// These are always-increasing and produce constant noise in rolling-window detectors.
+	skipDetection := m.Type() == pmetric.MetricTypeSum && m.Sum().IsMonotonic()
 	enqueue := func(tsNs int64, value float64, attrs pcommon.Map) {
 		row := MetricRow{
 			Name:          m.Name(),
@@ -254,8 +257,10 @@ func (s *Storage) enqueueMetric(resJSON string, m pmetric.Metric) {
 			ResourceAttrs: resJSON,
 			DataAttrs:     marshalAttrs(attrs),
 		}
-		// Anomaly detection: keyed on (entity, metric) for per-service baselines.
-		anomaly := s.detector.Check(entityID, m.Name(), value)
+		var anomaly *AnomalyRow
+		if !skipDetection {
+			anomaly = s.detector.Check(entityID, m.Name(), value)
+		}
 		s.received.WithLabelValues("metrics").Inc()
 		select {
 		case s.metricCh <- metricBatch{row: row, anomaly: anomaly}:

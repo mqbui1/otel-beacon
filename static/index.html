@@ -530,41 +530,79 @@
 
 <!-- ══ ANOMALIES ═══════════════════════════════════════════════════════════ -->
 <div class="tab" id="tab-anomalies">
-  <div class="filters">
-    <label>Signal Type
-      <select id="f-anom-signal">
-        <option value="">All</option>
-        <option value="metric">Metric</option>
-        <option value="span_error_rate">Span Error Rate</option>
-        <option value="span_latency">Span Latency</option>
-        <option value="trace_drift">Trace Drift</option>
-        <option value="error_signature">Error Signature</option>
-      </select>
-    </label>
-    <label>Severity
-      <select id="f-anom-severity">
-        <option value="">All</option>
-        <option value="critical">Critical</option>
-        <option value="warning">Warning</option>
-      </select>
-    </label>
-    <label>Limit<input id="f-anom-limit" type="number" value="100" style="min-width:80px"></label>
-    <button onclick="loadAnomalies()">Apply</button>
+
+  <!-- View toggle -->
+  <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+    <div style="display:flex;background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden">
+      <button id="anom-view-incidents" onclick="setAnomView('incidents')"
+        style="padding:6px 16px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:13px;font-weight:500">
+        Incidents
+      </button>
+      <button id="anom-view-raw" onclick="setAnomView('raw')"
+        style="padding:6px 16px;border:none;background:none;color:var(--muted);cursor:pointer;font-size:13px;font-weight:500">
+        Raw Anomalies
+      </button>
+    </div>
+    <span class="dim" id="anom-view-hint">Grouped by entity · 30-min windows</span>
   </div>
-  <div class="stats">
-    <div class="stat"><div class="val" id="s-anom-count">—</div><div class="lbl">Total</div></div>
-    <div class="stat"><div class="val" id="s-anom-crit" style="color:var(--red)">—</div><div class="lbl">Critical</div></div>
-    <div class="stat"><div class="val" id="s-anom-warn" style="color:var(--yellow)">—</div><div class="lbl">Warning</div></div>
-    <div class="stat"><div class="val" id="s-anom-trace" style="color:var(--cyan)">—</div><div class="lbl">Trace Drift</div></div>
-    <div class="stat"><div class="val" id="s-anom-errsig" style="color:var(--orange)">—</div><div class="lbl">New Errors</div></div>
+
+  <!-- ── Incidents view ── -->
+  <div id="anom-incidents-view">
+    <div class="stats">
+      <div class="stat"><div class="val" id="s-inc-count">—</div><div class="lbl">Incidents</div></div>
+      <div class="stat"><div class="val" id="s-inc-crit" style="color:var(--red)">—</div><div class="lbl">Critical</div></div>
+      <div class="stat"><div class="val" id="s-inc-entities">—</div><div class="lbl">Entities Affected</div></div>
+      <div class="stat"><div class="val" id="s-inc-errsig" style="color:var(--orange)">—</div><div class="lbl">New Error Sigs</div></div>
+      <div class="stat"><div class="val" id="s-inc-trace" style="color:var(--cyan)">—</div><div class="lbl">Trace Drift</div></div>
+    </div>
+    <div class="card">
+      <table>
+        <thead><tr>
+          <th>Severity</th><th>Entity</th><th>Signals</th><th>Anomalies</th><th>Window</th><th>Latest</th><th></th>
+        </tr></thead>
+        <tbody id="incidents-body"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
   </div>
-  <div class="card">
-    <table>
-      <thead><tr>
-        <th>Severity</th><th>Entity</th><th>Signal</th><th>Detector</th><th>Description</th><th>Score</th><th>Detected At</th><th></th>
-      </tr></thead>
-      <tbody id="anomalies-body"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
-    </table>
+
+  <!-- ── Raw anomalies view ── -->
+  <div id="anom-raw-view" style="display:none">
+    <div class="filters">
+      <label>Signal Type
+        <select id="f-anom-signal">
+          <option value="">All</option>
+          <option value="metric">Metric</option>
+          <option value="span_error_rate">Span Error Rate</option>
+          <option value="span_latency">Span Latency</option>
+          <option value="trace_drift">Trace Drift</option>
+          <option value="error_signature">Error Signature</option>
+        </select>
+      </label>
+      <label>Severity
+        <select id="f-anom-severity">
+          <option value="">All</option>
+          <option value="critical">Critical</option>
+          <option value="warning">Warning</option>
+        </select>
+      </label>
+      <label>Limit<input id="f-anom-limit" type="number" value="200" style="min-width:80px"></label>
+      <button onclick="loadAnomalies()">Apply</button>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="val" id="s-anom-count">—</div><div class="lbl">Total</div></div>
+      <div class="stat"><div class="val" id="s-anom-crit" style="color:var(--red)">—</div><div class="lbl">Critical</div></div>
+      <div class="stat"><div class="val" id="s-anom-warn" style="color:var(--yellow)">—</div><div class="lbl">Warning</div></div>
+      <div class="stat"><div class="val" id="s-anom-trace" style="color:var(--cyan)">—</div><div class="lbl">Trace Drift</div></div>
+      <div class="stat"><div class="val" id="s-anom-errsig" style="color:var(--orange)">—</div><div class="lbl">New Errors</div></div>
+    </div>
+    <div class="card">
+      <table>
+        <thead><tr>
+          <th>Severity</th><th>Entity</th><th>Signal</th><th>Detector</th><th>Description</th><th>Score</th><th>Detected At</th><th></th>
+        </tr></thead>
+        <tbody id="anomalies-body"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
   </div>
 </div>
 
@@ -672,7 +710,7 @@ function loadCurrent() {
   if (currentTab === 'traces')         loadTraces();
   else if (currentTab === 'metrics')   loadMetrics();
   else if (currentTab === 'logs')      loadLogs();
-  else if (currentTab === 'anomalies') loadAnomalies();
+  else if (currentTab === 'anomalies') { if (_anomView === 'incidents') loadIncidents(); else loadAnomalies(); }
   else if (currentTab === 'services')  loadServices();
 }
 
@@ -1378,9 +1416,81 @@ const SIGNAL_BADGE = {
   metric: 'b-info', span_error_rate: 'b-high', span_latency: 'b-med',
   trace_drift: 'b-cyan', error_signature: 'b-warn',
 };
+const SIGNAL_PRIORITY = {
+  error_signature: 5, span_error_rate: 4, trace_drift: 3, span_latency: 2, metric: 1,
+};
+
+let _anomView = 'incidents';
+
+function setAnomView(view) {
+  _anomView = view;
+  const incBtn = document.getElementById('anom-view-incidents');
+  const rawBtn = document.getElementById('anom-view-raw');
+  const hint   = document.getElementById('anom-view-hint');
+  if (view === 'incidents') {
+    incBtn.style.background = 'var(--accent)'; incBtn.style.color = '#fff';
+    rawBtn.style.background = 'none';          rawBtn.style.color = 'var(--muted)';
+    document.getElementById('anom-incidents-view').style.display = '';
+    document.getElementById('anom-raw-view').style.display = 'none';
+    hint.textContent = 'Grouped by entity · 30-min windows';
+    loadIncidents();
+  } else {
+    rawBtn.style.background = 'var(--accent)'; rawBtn.style.color = '#fff';
+    incBtn.style.background = 'none';          incBtn.style.color = 'var(--muted)';
+    document.getElementById('anom-incidents-view').style.display = 'none';
+    document.getElementById('anom-raw-view').style.display = '';
+    hint.textContent = 'All raw anomaly signals';
+    loadAnomalies();
+  }
+}
+
+async function loadIncidents() {
+  const res = await api('/v1/incidents');
+  const incidents = res?.data || [];
+
+  const critCount     = incidents.filter(i => i.severity === 'critical').length;
+  const entitySet     = new Set(incidents.map(i => i.entity_id));
+  const errSigCount   = incidents.filter(i => (i.signals?.error_signature || 0) > 0).length;
+  const traceDriftCnt = incidents.filter(i => (i.signals?.trace_drift || 0) > 0).length;
+
+  document.getElementById('s-inc-count').textContent    = incidents.length;
+  document.getElementById('s-inc-crit').textContent     = critCount;
+  document.getElementById('s-inc-entities').textContent = entitySet.size;
+  document.getElementById('s-inc-errsig').textContent   = errSigCount;
+  document.getElementById('s-inc-trace').textContent    = traceDriftCnt;
+
+  const tbody = document.getElementById('incidents-body');
+  if (!incidents.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">No incidents — background workers start after ~2 min of data accumulation…</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = incidents.map(inc => {
+    const sevCls = inc.severity === 'critical' ? 'b-high' : 'b-med';
+    // Build signal badges sorted by priority desc
+    const sigBadges = Object.entries(inc.signals || {})
+      .sort(([a],[b]) => (SIGNAL_PRIORITY[b]||0) - (SIGNAL_PRIORITY[a]||0))
+      .map(([sig, cnt]) => {
+        const cls = SIGNAL_BADGE[sig] || 'b-info';
+        const lbl = SIGNAL_LABELS[sig] || sig;
+        return `<span class="badge ${cls}" style="margin-right:3px">${lbl}${cnt>1?` ×${cnt}`:''}</span>`;
+      }).join('');
+    const windowStr = fmtTime(inc.bucket_ts * 1e9) + ' – ' + fmtTime((inc.bucket_ts + 1800) * 1e9);
+    const latestStr = fmtTime(inc.latest_ts * 1e9);
+    return `<tr>
+      <td><span class="badge ${sevCls}">${inc.severity}</span></td>
+      <td class="mono" style="font-weight:600">${esc(inc.entity_id)}</td>
+      <td>${sigBadges}</td>
+      <td><span class="badge b-info">${inc.anomaly_count}</span></td>
+      <td class="dim mono" style="font-size:11px;white-space:nowrap">${windowStr}</td>
+      <td class="dim mono">${latestStr}</td>
+      <td><button class="btn-rca-sm" onclick="openRCAFromAnomaly('${esc(inc.entity_id)}',${inc.latest_ts})">Analyze</button></td>
+    </tr>`;
+  }).join('');
+}
 
 async function loadAnomalies() {
-  const p = new URLSearchParams({ limit: document.getElementById('f-anom-limit').value || 100 });
+  const p = new URLSearchParams({ limit: document.getElementById('f-anom-limit').value || 200 });
   const res = await api('/v1/query/anomalies?' + p);
   let rows = res?.data || [];
 
@@ -1398,7 +1508,7 @@ async function loadAnomalies() {
 
   const tbody = document.getElementById('anomalies-body');
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty">No anomalies detected yet — background workers start after ~2 min of data accumulation…</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">No anomalies detected yet…</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map(r => {
@@ -1416,21 +1526,15 @@ async function loadAnomalies() {
       <td class="dim" style="max-width:160px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis" title="${esc(r.detector_name)}">${esc(r.detector_name)}</td>
       <td style="max-width:340px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis" title="${esc(r.description)}">${esc(r.description)}</td>
       <td><span class="badge b-info">${r.score.toFixed(2)}</span></td>
-      <td class="mono dim">${fmtTime(r.detected_at * 1e6)}</td>
+      <td class="mono dim">${fmtTime(r.detected_at * 1e9)}</td>
       <td>${rcaBtn}</td>
     </tr>`;
   }).join('');
 }
 
 function openRCAFromAnomaly(entityId, detectedAtSecs) {
-  // Pre-populate RCA with entity + center window on anomaly timestamp
-  document.getElementById('rca-entity').value = entityId;
-  const windowSel = document.getElementById('rca-window');
-  if (windowSel) windowSel.value = '300';
-  // Store the anomaly timestamp so runRCA can use it
   window._rcaAnomalyTs = detectedAtSecs;
   openRCA(entityId);
-  // Auto-run analysis
   setTimeout(runRCA, 100);
 }
 

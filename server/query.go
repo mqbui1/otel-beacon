@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,7 @@ func NewQueryServer(store *storage.Storage, logger *zap.Logger) http.Handler {
 	mux.HandleFunc("/v1/topology", s.topology)
 	mux.HandleFunc("/v1/entity/signals", s.entitySignals)
 	mux.HandleFunc("/v1/rca", s.rca)
+	mux.HandleFunc("/v1/incidents", s.incidents)
 	return mux
 }
 
@@ -150,6 +152,106 @@ func (s *queryServer) entitySignals(w http.ResponseWriter, r *http.Request) {
 		"metrics":     envelope{Data: metricRows, Count: len(metricRows)},
 		"logs":        envelope{Data: logRows, Count: len(logRows)},
 	})
+}
+
+// IncidentOut groups anomalies by (entity_id, 30-min bucket) into actionable incidents.
+type IncidentOut struct {
+	EntityID     string         `json:"entity_id"`
+	BucketTs     int64          `json:"bucket_ts"`    // Unix seconds, start of 30-min window
+	Signals      map[string]int `json:"signals"`      // signal_type → count
+	Priority     int            `json:"priority"`     // highest signal priority in incident
+	Severity     string         `json:"severity"`     // "critical" if any, else "warning"
+	AnomalyCount int            `json:"anomaly_count"`
+	LatestTs     int64          `json:"latest_ts"`
+	EarliestTs   int64          `json:"earliest_ts"`
+}
+
+// signalPriority maps signal types to priority scores for incident ranking.
+var signalPriority = map[string]int{
+	"error_signature": 5,
+	"span_error_rate": 4,
+	"trace_drift":     3,
+	"span_latency":    2,
+	"metric":          1,
+}
+
+func (s *queryServer) incidents(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.store.QueryAnomalies(r.Context(), 2000)
+	if err != nil {
+		s.logger.Error("query anomalies for incidents", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	const bucketSecs int64 = 30 * 60
+
+	type incKey struct {
+		entityID string
+		bucket   int64
+	}
+	type incData struct {
+		signals    map[string]int
+		priority   int
+		severity   string
+		count      int
+		latestTs   int64
+		earliestTs int64
+	}
+
+	inc := map[incKey]*incData{}
+	for _, row := range rows {
+		if row.EntityID == "" {
+			continue
+		}
+		bucket := (row.DetectedAt / bucketSecs) * bucketSecs
+		k := incKey{row.EntityID, bucket}
+		d, ok := inc[k]
+		if !ok {
+			d = &incData{
+				signals:    map[string]int{},
+				severity:   "warning",
+				earliestTs: row.DetectedAt,
+			}
+			inc[k] = d
+		}
+		d.signals[row.SignalType]++
+		d.count++
+		if row.DetectedAt > d.latestTs {
+			d.latestTs = row.DetectedAt
+		}
+		if row.DetectedAt < d.earliestTs {
+			d.earliestTs = row.DetectedAt
+		}
+		if p := signalPriority[row.SignalType]; p > d.priority {
+			d.priority = p
+		}
+		if row.Severity == "critical" {
+			d.severity = "critical"
+		}
+	}
+
+	out := make([]IncidentOut, 0, len(inc))
+	for k, d := range inc {
+		out = append(out, IncidentOut{
+			EntityID:     k.entityID,
+			BucketTs:     k.bucket,
+			Signals:      d.signals,
+			Priority:     d.priority,
+			Severity:     d.severity,
+			AnomalyCount: d.count,
+			LatestTs:     d.latestTs,
+			EarliestTs:   d.earliestTs,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Priority != out[j].Priority {
+			return out[i].Priority > out[j].Priority
+		}
+		return out[i].LatestTs > out[j].LatestTs
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(envelope{Data: out, Count: len(out)})
 }
 
 // ---------------------------------------------------------------------------
