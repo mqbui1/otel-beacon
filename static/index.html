@@ -1538,7 +1538,7 @@ function openRCAFromAnomaly(entityId, detectedAtSecs, bucketTs) {
   window._rcaAnomalyTs = bucketTs || detectedAtSecs;
   window._rcaWindow = bucketTs ? 1800 : null; // 30-min window for incidents
   openRCA(entityId);
-  setTimeout(runRCA, 100);
+  runRCA();
 }
 
 // ── Services / Entity Map ───────────────────────────────────────────────────
