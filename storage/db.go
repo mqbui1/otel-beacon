@@ -141,8 +141,11 @@ func (s *Storage) Init(ctx context.Context) error {
 		s.wg.Add(1)
 		go s.retentionWorker()
 	}
-	s.wg.Add(1)
+	s.wg.Add(4)
 	go s.topologyWorker()
+	go s.fingerprintWorker()
+	go s.errorSignatureWorker()
+	go s.spanRateWorker()
 	return nil
 }
 
@@ -239,6 +242,7 @@ func (s *Storage) InsertMetrics(_ context.Context, md pmetric.Metrics) error {
 }
 
 func (s *Storage) enqueueMetric(resJSON string, m pmetric.Metric) {
+	entityID := extractServiceName(resJSON)
 	enqueue := func(tsNs int64, value float64, attrs pcommon.Map) {
 		row := MetricRow{
 			Name:          m.Name(),
@@ -250,9 +254,8 @@ func (s *Storage) enqueueMetric(resJSON string, m pmetric.Metric) {
 			ResourceAttrs: resJSON,
 			DataAttrs:     marshalAttrs(attrs),
 		}
-		// Anomaly detection happens here on the enqueue goroutine (not the worker),
-		// keeping the detector hot in cache alongside the incoming data.
-		anomaly := s.detector.Check(m.Name(), value)
+		// Anomaly detection: keyed on (entity, metric) for per-service baselines.
+		anomaly := s.detector.Check(entityID, m.Name(), value)
 		s.received.WithLabelValues("metrics").Inc()
 		select {
 		case s.metricCh <- metricBatch{row: row, anomaly: anomaly}:
@@ -591,6 +594,15 @@ func (s *Storage) Dropped() int64 {
 	var n atomic.Int64
 	// value is maintained via prometheus counters; expose for backward compat
 	return n.Load()
+}
+
+func extractServiceName(resJSON string) string {
+	var attrs map[string]any
+	if err := json.Unmarshal([]byte(resJSON), &attrs); err != nil {
+		return ""
+	}
+	svc, _ := attrs["service.name"].(string)
+	return svc
 }
 
 func marshalAttrs(attrs pcommon.Map) string {

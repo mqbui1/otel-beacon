@@ -71,7 +71,14 @@ func (s *queryServer) rca(w http.ResponseWriter, r *http.Request) {
 
 	var incidentTs int64
 	if raw := r.URL.Query().Get("ts"); raw != "" {
-		incidentTs, _ = strconv.ParseInt(raw, 10, 64)
+		if v, err := strconv.ParseInt(raw, 10, 64); err == nil && v > 0 {
+			// ts is Unix seconds (from anomaly detected_at); convert to nanoseconds
+			if v < 1e12 {
+				incidentTs = v * 1_000_000_000
+			} else {
+				incidentTs = v // already nanoseconds
+			}
+		}
 	}
 	if incidentTs == 0 {
 		incidentTs = time.Now().UnixNano()

@@ -105,6 +105,9 @@
     .b-high  { background: rgba(239,68,68,.2);   color: var(--red); font-size: 13px; }
     .b-med   { background: rgba(249,115,22,.15); color: var(--orange); font-size: 13px; }
     .b-low   { background: rgba(234,179,8,.12);  color: var(--yellow); font-size: 13px; }
+    .b-cyan  { background: rgba(34,211,238,.12); color: var(--cyan); }
+    .b-warn  { background: rgba(249,115,22,.12); color: var(--orange); }
+    .btn-rca-sm { background: #7c3aed; color: #fff; border: none; padding: 3px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: 600; white-space: nowrap; }
 
     /* ── Chart ── */
     .chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
@@ -528,20 +531,39 @@
 <!-- ══ ANOMALIES ═══════════════════════════════════════════════════════════ -->
 <div class="tab" id="tab-anomalies">
   <div class="filters">
-    <label>Limit<input id="f-anom-limit" type="number" value="50" style="min-width:80px"></label>
+    <label>Signal Type
+      <select id="f-anom-signal">
+        <option value="">All</option>
+        <option value="metric">Metric</option>
+        <option value="span_error_rate">Span Error Rate</option>
+        <option value="span_latency">Span Latency</option>
+        <option value="trace_drift">Trace Drift</option>
+        <option value="error_signature">Error Signature</option>
+      </select>
+    </label>
+    <label>Severity
+      <select id="f-anom-severity">
+        <option value="">All</option>
+        <option value="critical">Critical</option>
+        <option value="warning">Warning</option>
+      </select>
+    </label>
+    <label>Limit<input id="f-anom-limit" type="number" value="100" style="min-width:80px"></label>
     <button onclick="loadAnomalies()">Apply</button>
   </div>
   <div class="stats">
-    <div class="stat"><div class="val" id="s-anom-count">—</div><div class="lbl">Detected</div></div>
-    <div class="stat"><div class="val" id="s-anom-high" style="color:var(--red)">—</div><div class="lbl">High (score ≥10)</div></div>
-    <div class="stat"><div class="val" id="s-anom-med" style="color:var(--orange)">—</div><div class="lbl">Medium (5–10)</div></div>
+    <div class="stat"><div class="val" id="s-anom-count">—</div><div class="lbl">Total</div></div>
+    <div class="stat"><div class="val" id="s-anom-crit" style="color:var(--red)">—</div><div class="lbl">Critical</div></div>
+    <div class="stat"><div class="val" id="s-anom-warn" style="color:var(--yellow)">—</div><div class="lbl">Warning</div></div>
+    <div class="stat"><div class="val" id="s-anom-trace" style="color:var(--cyan)">—</div><div class="lbl">Trace Drift</div></div>
+    <div class="stat"><div class="val" id="s-anom-errsig" style="color:var(--orange)">—</div><div class="lbl">New Errors</div></div>
   </div>
   <div class="card">
     <table>
       <thead><tr>
-        <th>Metric</th><th>Value</th><th>Score</th><th>Mean</th><th>StdDev</th><th>Algorithm</th><th>Detected At</th>
+        <th>Severity</th><th>Entity</th><th>Signal</th><th>Detector</th><th>Description</th><th>Score</th><th>Detected At</th><th></th>
       </tr></thead>
-      <tbody id="anomalies-body"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+      <tbody id="anomalies-body"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
     </table>
   </div>
 </div>
@@ -1348,35 +1370,68 @@ function switchSigTab(name, btn) {
 }
 
 // ── Anomalies ──────────────────────────────────────────────────────────────
-async function loadAnomalies() {
-  const p = new URLSearchParams({ limit: document.getElementById('f-anom-limit').value || 50 });
-  const res = await api('/v1/query/anomalies?' + p);
-  const rows = res?.data || [];
+const SIGNAL_LABELS = {
+  metric: 'Metric', span_error_rate: 'Error Rate', span_latency: 'Latency',
+  trace_drift: 'Trace Drift', error_signature: 'Error Sig',
+};
+const SIGNAL_BADGE = {
+  metric: 'b-info', span_error_rate: 'b-high', span_latency: 'b-med',
+  trace_drift: 'b-cyan', error_signature: 'b-warn',
+};
 
-  const high = rows.filter(r => r.score >= 10).length;
-  const med  = rows.filter(r => r.score >= 5 && r.score < 10).length;
-  document.getElementById('s-anom-count').textContent = rows.length;
-  document.getElementById('s-anom-high').textContent  = high;
-  document.getElementById('s-anom-med').textContent   = med;
+async function loadAnomalies() {
+  const p = new URLSearchParams({ limit: document.getElementById('f-anom-limit').value || 100 });
+  const res = await api('/v1/query/anomalies?' + p);
+  let rows = res?.data || [];
+
+  // Client-side filter for signal_type and severity
+  const sigFilter = document.getElementById('f-anom-signal').value;
+  const sevFilter = document.getElementById('f-anom-severity').value;
+  if (sigFilter) rows = rows.filter(r => r.signal_type === sigFilter);
+  if (sevFilter) rows = rows.filter(r => r.severity === sevFilter);
+
+  document.getElementById('s-anom-count').textContent  = rows.length;
+  document.getElementById('s-anom-crit').textContent   = rows.filter(r => r.severity === 'critical').length;
+  document.getElementById('s-anom-warn').textContent   = rows.filter(r => r.severity === 'warning').length;
+  document.getElementById('s-anom-trace').textContent  = rows.filter(r => r.signal_type === 'trace_drift').length;
+  document.getElementById('s-anom-errsig').textContent = rows.filter(r => r.signal_type === 'error_signature').length;
 
   const tbody = document.getElementById('anomalies-body');
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty">No anomalies detected yet — data is still accumulating…</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">No anomalies detected yet — background workers start after ~2 min of data accumulation…</td></tr>';
     return;
   }
   tbody.innerHTML = rows.map(r => {
-    const cls = r.score >= 10 ? 'b-high' : r.score >= 5 ? 'b-med' : 'b-low';
-    return `
-    <tr>
-      <td class="mono trunc" style="max-width:320px" title="${esc(r.metric_name)}">${esc(r.metric_name)}</td>
-      <td class="mono">${fmtVal(r.value)}</td>
-      <td><span class="badge ${cls}">${r.score.toFixed(2)}</span></td>
-      <td class="mono dim">${fmtVal(r.mean)}</td>
-      <td class="mono dim">${fmtVal(r.stddev)}</td>
-      <td><span class="badge b-info">${esc(r.algorithm)}</span></td>
+    const sevCls  = r.severity === 'critical' ? 'b-high' : 'b-med';
+    const sigCls  = SIGNAL_BADGE[r.signal_type] || 'b-info';
+    const sigLbl  = SIGNAL_LABELS[r.signal_type] || r.signal_type;
+    const canRCA  = r.entity_id && r.entity_id !== '';
+    const rcaBtn  = canRCA
+      ? `<button class="btn-rca-sm" onclick="openRCAFromAnomaly('${esc(r.entity_id)}',${r.detected_at})">Analyze</button>`
+      : '';
+    return `<tr>
+      <td><span class="badge ${sevCls}">${r.severity}</span></td>
+      <td class="mono">${esc(r.entity_id || '—')}</td>
+      <td><span class="badge ${sigCls}">${sigLbl}</span></td>
+      <td class="dim" style="max-width:160px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis" title="${esc(r.detector_name)}">${esc(r.detector_name)}</td>
+      <td style="max-width:340px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis" title="${esc(r.description)}">${esc(r.description)}</td>
+      <td><span class="badge b-info">${r.score.toFixed(2)}</span></td>
       <td class="mono dim">${fmtTime(r.detected_at * 1e6)}</td>
-    </tr>
-  `;}).join('');
+      <td>${rcaBtn}</td>
+    </tr>`;
+  }).join('');
+}
+
+function openRCAFromAnomaly(entityId, detectedAtSecs) {
+  // Pre-populate RCA with entity + center window on anomaly timestamp
+  document.getElementById('rca-entity').value = entityId;
+  const windowSel = document.getElementById('rca-window');
+  if (windowSel) windowSel.value = '300';
+  // Store the anomaly timestamp so runRCA can use it
+  window._rcaAnomalyTs = detectedAtSecs;
+  openRCA(entityId);
+  // Auto-run analysis
+  setTimeout(runRCA, 100);
 }
 
 // ── Services / Entity Map ───────────────────────────────────────────────────
@@ -1652,7 +1707,10 @@ async function runRCA(withAI) {
   if (!_rcaEntityID) return;
   const win = document.getElementById('rca-window-sel').value;
   document.getElementById('rca-body').innerHTML = '<div class="empty">Analyzing…</div>';
-  const url = `/v1/rca?entity=${encodeURIComponent(_rcaEntityID)}&window=${win}${withAI ? '&ai=true' : ''}`;
+  // If triggered from an anomaly, anchor the window to the anomaly timestamp
+  const tsParam = window._rcaAnomalyTs ? `&ts=${window._rcaAnomalyTs}` : '';
+  const url = `/v1/rca?entity=${encodeURIComponent(_rcaEntityID)}&window=${win}${tsParam}${withAI ? '&ai=true' : ''}`;
+  window._rcaAnomalyTs = null; // consume once
   const res = await api(url);
   if (!res) {
     document.getElementById('rca-body').innerHTML = '<div class="empty">RCA request failed.</div>';

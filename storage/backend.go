@@ -43,13 +43,41 @@ type LogRow struct {
 }
 
 type AnomalyRow struct {
-	MetricName string  `json:"metric_name"`
-	Value      float64 `json:"value"`
-	Score      float64 `json:"score"`
-	Mean       float64 `json:"mean"`
-	StdDev     float64 `json:"stddev"`
-	Algorithm  string  `json:"algorithm"`
-	DetectedAt int64   `json:"detected_at"`
+	EntityID     string  `json:"entity_id"`
+	SignalType   string  `json:"signal_type"`    // "metric"|"span_error_rate"|"span_latency"|"trace_drift"|"error_signature"
+	DetectorName string  `json:"detector_name"`
+	MetricName   string  `json:"metric_name"`
+	Value        float64 `json:"value"`
+	Score        float64 `json:"score"`
+	Mean         float64 `json:"mean"`
+	StdDev       float64 `json:"stddev"`
+	Algorithm    string  `json:"algorithm"`
+	Severity     string  `json:"severity"`     // "warning"|"critical"
+	Description  string  `json:"description"`
+	DetectedAt   int64   `json:"detected_at"`
+}
+
+type TraceFingerprintRow struct {
+	Hash            string `json:"hash"`
+	RootService     string `json:"root_service"`
+	EdgeList        string `json:"edge_list"`        // JSON: ["svc:op→svc:op"]
+	OccurrenceCount int64  `json:"occurrence_count"`
+	FirstSeenAt     int64  `json:"first_seen_at"`
+	LastSeenAt      int64  `json:"last_seen_at"`
+	IsBaseline      bool   `json:"is_baseline"`
+}
+
+type ErrorSignatureRow struct {
+	Hash            string  `json:"hash"`
+	Service         string  `json:"service"`
+	ErrorType       string  `json:"error_type"`
+	HTTPStatus      string  `json:"http_status"`
+	Operation       string  `json:"operation"`
+	OccurrenceCount int64   `json:"occurrence_count"`
+	BaselineRate    float64 `json:"baseline_rate"` // occurrences per window
+	FirstSeenAt     int64   `json:"first_seen_at"`
+	LastSeenAt      int64   `json:"last_seen_at"`
+	IsBaseline      bool    `json:"is_baseline"`
 }
 
 // EntityRow represents a discovered entity (service, host, etc.).
@@ -75,12 +103,14 @@ type TopologyEdge struct {
 // ---------------------------------------------------------------------------
 
 type SpanQuery struct {
-	TraceID string
-	Name    string
-	Service string // filter by resource_attrs["service.name"]
-	From    int64  // nanoseconds
-	To      int64
-	Limit   int
+	TraceID       string
+	Name          string
+	Service       string // filter by resource_attrs["service.name"]
+	StatusCode    int    // non-zero: filter status_code = value (2 = ERROR)
+	From          int64  // nanoseconds
+	To            int64
+	Limit         int
+	InternalLimit int    // bypass 1000-row cap for background workers
 }
 
 type MetricQuery struct {
@@ -113,11 +143,18 @@ type Backend interface {
 	FlushSpans(ctx context.Context, batch []SpanRow) error
 	FlushMetrics(ctx context.Context, metrics []MetricRow, anomalies []AnomalyRow) error
 	FlushLogs(ctx context.Context, batch []LogRow) error
+	FlushAnomalies(ctx context.Context, rows []AnomalyRow) error
 
 	QuerySpans(ctx context.Context, q SpanQuery) ([]SpanRow, error)
 	QueryMetrics(ctx context.Context, q MetricQuery) ([]MetricRow, error)
 	QueryLogs(ctx context.Context, q LogQuery) ([]LogRow, error)
 	QueryAnomalies(ctx context.Context, limit int) ([]AnomalyRow, error)
+
+	// Fingerprints / error signatures
+	UpsertTraceFingerprint(ctx context.Context, fp TraceFingerprintRow) error
+	QueryTraceFingerprints(ctx context.Context, service string) ([]TraceFingerprintRow, error)
+	UpsertErrorSignature(ctx context.Context, sig ErrorSignatureRow) error
+	QueryErrorSignatures(ctx context.Context, service string) ([]ErrorSignatureRow, error)
 
 	// Entity / topology
 	UpsertEntities(ctx context.Context, entities []EntityRow) error

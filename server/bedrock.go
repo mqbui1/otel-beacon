@@ -14,7 +14,7 @@ import (
 func generateNarrative(ctx context.Context, result RCAResult) (string, error) {
 	region := os.Getenv("AWS_REGION")
 	if region == "" {
-		region = "us-east-1"
+		region = "us-west-2"
 	}
 
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
@@ -62,7 +62,7 @@ Be specific with service names and numbers. Do not speculate beyond the data.`, 
 
 	modelID := os.Getenv("BEDROCK_MODEL_ID")
 	if modelID == "" {
-		modelID = "anthropic.claude-3-5-haiku-20241022-v1:0"
+		modelID = "arn:aws:bedrock:us-west-2:387769110234:application-inference-profile/fky19kpnw2m7"
 	}
 
 	resp, err := client.InvokeModel(ctx, &bedrockruntime.InvokeModelInput{

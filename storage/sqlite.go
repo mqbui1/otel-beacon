@@ -27,8 +27,25 @@ func (b *SQLiteBackend) Init(ctx context.Context) error {
 	if _, err := b.db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
 		return err
 	}
-	_, err := b.db.ExecContext(ctx, sqliteSchema)
-	return err
+	if _, err := b.db.ExecContext(ctx, sqliteSchema); err != nil {
+		return err
+	}
+	b.migrateSchema(ctx)
+	return nil
+}
+
+// migrateSchema adds new columns/tables to existing databases without data loss.
+func (b *SQLiteBackend) migrateSchema(ctx context.Context) {
+	migrations := []string{
+		`ALTER TABLE anomalies ADD COLUMN entity_id TEXT DEFAULT ''`,
+		`ALTER TABLE anomalies ADD COLUMN signal_type TEXT DEFAULT 'metric'`,
+		`ALTER TABLE anomalies ADD COLUMN detector_name TEXT DEFAULT ''`,
+		`ALTER TABLE anomalies ADD COLUMN severity TEXT DEFAULT 'warning'`,
+		`ALTER TABLE anomalies ADD COLUMN description TEXT DEFAULT ''`,
+	}
+	for _, m := range migrations {
+		b.db.ExecContext(ctx, m) // ignore "duplicate column" errors
+	}
 }
 
 func (b *SQLiteBackend) Close() error { return b.db.Close() }
@@ -84,15 +101,18 @@ func (b *SQLiteBackend) FlushMetrics(ctx context.Context, metrics []MetricRow, a
 			return nil
 		}
 		astmt, err := tx.PrepareContext(ctx, `
-			INSERT INTO anomalies (metric_name, value, z_score, mean, stddev, algorithm, detected_at)
-			VALUES (?,?,?,?,?,?,?)`)
+			INSERT INTO anomalies
+				(entity_id, signal_type, detector_name, metric_name,
+				 value, z_score, mean, stddev, algorithm, severity, description, detected_at)
+			VALUES (?,?,?,?, ?,?,?,?,?,?,?,?)`)
 		if err != nil {
 			return err
 		}
 		defer astmt.Close()
 		for _, a := range anomalies {
 			if _, err := astmt.ExecContext(ctx,
-				a.MetricName, a.Value, a.Score, a.Mean, a.StdDev, a.Algorithm, a.DetectedAt,
+				a.EntityID, a.SignalType, a.DetectorName, a.MetricName,
+				a.Value, a.Score, a.Mean, a.StdDev, a.Algorithm, a.Severity, a.Description, a.DetectedAt,
 			); err != nil {
 				return err
 			}
@@ -129,12 +149,16 @@ func (b *SQLiteBackend) FlushLogs(ctx context.Context, batch []LogRow) error {
 
 func (b *SQLiteBackend) QuerySpans(ctx context.Context, q SpanQuery) ([]SpanRow, error) {
 	where, args := spanWhere(q)
+	lim := limit(q.Limit)
+	if q.InternalLimit > 0 {
+		lim = q.InternalLimit
+	}
 	rows, err := b.db.QueryContext(ctx,
 		`SELECT trace_id, span_id, parent_span_id, name, kind,
 			start_ns, end_ns, duration_ms, status_code, status_msg,
 			resource_attrs, span_attrs
 		 FROM spans`+where+` ORDER BY start_ns DESC LIMIT ?`,
-		append(args, limit(q.Limit))...,
+		append(args, lim)...,
 	)
 	if err != nil {
 		return nil, err
@@ -204,7 +228,8 @@ func (b *SQLiteBackend) QueryLogs(ctx context.Context, q LogQuery) ([]LogRow, er
 
 func (b *SQLiteBackend) QueryAnomalies(ctx context.Context, lim int) ([]AnomalyRow, error) {
 	rows, err := b.db.QueryContext(ctx,
-		`SELECT metric_name, value, z_score, mean, stddev, algorithm, detected_at
+		`SELECT entity_id, signal_type, detector_name, metric_name,
+		        value, z_score, mean, stddev, algorithm, severity, description, detected_at
 		 FROM anomalies ORDER BY detected_at DESC LIMIT ?`, limit(lim))
 	if err != nil {
 		return nil, err
@@ -213,10 +238,143 @@ func (b *SQLiteBackend) QueryAnomalies(ctx context.Context, lim int) ([]AnomalyR
 	var out []AnomalyRow
 	for rows.Next() {
 		var r AnomalyRow
-		if err := rows.Scan(&r.MetricName, &r.Value, &r.Score, &r.Mean, &r.StdDev, &r.Algorithm, &r.DetectedAt); err != nil {
+		if err := rows.Scan(
+			&r.EntityID, &r.SignalType, &r.DetectorName, &r.MetricName,
+			&r.Value, &r.Score, &r.Mean, &r.StdDev, &r.Algorithm, &r.Severity, &r.Description, &r.DetectedAt,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (b *SQLiteBackend) FlushAnomalies(ctx context.Context, rows []AnomalyRow) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	return b.inTx(ctx, func(tx *sql.Tx) error {
+		stmt, err := tx.PrepareContext(ctx, `
+			INSERT INTO anomalies
+				(entity_id, signal_type, detector_name, metric_name,
+				 value, z_score, mean, stddev, algorithm, severity, description, detected_at)
+			VALUES (?,?,?,?, ?,?,?,?,?,?,?,?)`)
+		if err != nil {
+			return err
+		}
+		defer stmt.Close()
+		for _, a := range rows {
+			if _, err := stmt.ExecContext(ctx,
+				a.EntityID, a.SignalType, a.DetectorName, a.MetricName,
+				a.Value, a.Score, a.Mean, a.StdDev, a.Algorithm, a.Severity, a.Description, a.DetectedAt,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (b *SQLiteBackend) UpsertTraceFingerprint(ctx context.Context, fp TraceFingerprintRow) error {
+	isBaseline := 0
+	if fp.IsBaseline {
+		isBaseline = 1
+	}
+	_, err := b.db.ExecContext(ctx, `
+		INSERT INTO trace_fingerprints
+			(hash, root_service, edge_list, occurrence_count, first_seen_at, last_seen_at, is_baseline)
+		VALUES (?,?,?,?,?,?,?)
+		ON CONFLICT(hash) DO UPDATE SET
+			occurrence_count = excluded.occurrence_count,
+			last_seen_at     = excluded.last_seen_at,
+			is_baseline      = MAX(is_baseline, excluded.is_baseline)`,
+		fp.Hash, fp.RootService, fp.EdgeList,
+		fp.OccurrenceCount, fp.FirstSeenAt, fp.LastSeenAt, isBaseline)
+	return err
+}
+
+func (b *SQLiteBackend) QueryTraceFingerprints(ctx context.Context, service string) ([]TraceFingerprintRow, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if service != "" {
+		rows, err = b.db.QueryContext(ctx,
+			`SELECT hash, root_service, edge_list, occurrence_count, first_seen_at, last_seen_at, is_baseline
+			 FROM trace_fingerprints WHERE root_service = ?`, service)
+	} else {
+		rows, err = b.db.QueryContext(ctx,
+			`SELECT hash, root_service, edge_list, occurrence_count, first_seen_at, last_seen_at, is_baseline
+			 FROM trace_fingerprints`)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TraceFingerprintRow
+	for rows.Next() {
+		var fp TraceFingerprintRow
+		var isBaseline int
+		if err := rows.Scan(&fp.Hash, &fp.RootService, &fp.EdgeList,
+			&fp.OccurrenceCount, &fp.FirstSeenAt, &fp.LastSeenAt, &isBaseline); err != nil {
+			return nil, err
+		}
+		fp.IsBaseline = isBaseline == 1
+		out = append(out, fp)
+	}
+	return out, rows.Err()
+}
+
+func (b *SQLiteBackend) UpsertErrorSignature(ctx context.Context, sig ErrorSignatureRow) error {
+	isBaseline := 0
+	if sig.IsBaseline {
+		isBaseline = 1
+	}
+	_, err := b.db.ExecContext(ctx, `
+		INSERT INTO error_signatures
+			(hash, service, error_type, http_status, operation,
+			 occurrence_count, baseline_rate, first_seen_at, last_seen_at, is_baseline)
+		VALUES (?,?,?,?,?, ?,?,?,?,?)
+		ON CONFLICT(hash) DO UPDATE SET
+			occurrence_count = excluded.occurrence_count,
+			baseline_rate    = excluded.baseline_rate,
+			last_seen_at     = excluded.last_seen_at,
+			is_baseline      = MAX(is_baseline, excluded.is_baseline)`,
+		sig.Hash, sig.Service, sig.ErrorType, sig.HTTPStatus, sig.Operation,
+		sig.OccurrenceCount, sig.BaselineRate, sig.FirstSeenAt, sig.LastSeenAt, isBaseline)
+	return err
+}
+
+func (b *SQLiteBackend) QueryErrorSignatures(ctx context.Context, service string) ([]ErrorSignatureRow, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if service != "" {
+		rows, err = b.db.QueryContext(ctx,
+			`SELECT hash, service, error_type, http_status, operation,
+			        occurrence_count, baseline_rate, first_seen_at, last_seen_at, is_baseline
+			 FROM error_signatures WHERE service = ?`, service)
+	} else {
+		rows, err = b.db.QueryContext(ctx,
+			`SELECT hash, service, error_type, http_status, operation,
+			        occurrence_count, baseline_rate, first_seen_at, last_seen_at, is_baseline
+			 FROM error_signatures`)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ErrorSignatureRow
+	for rows.Next() {
+		var sig ErrorSignatureRow
+		var isBaseline int
+		if err := rows.Scan(&sig.Hash, &sig.Service, &sig.ErrorType, &sig.HTTPStatus, &sig.Operation,
+			&sig.OccurrenceCount, &sig.BaselineRate, &sig.FirstSeenAt, &sig.LastSeenAt, &isBaseline); err != nil {
+			return nil, err
+		}
+		sig.IsBaseline = isBaseline == 1
+		out = append(out, sig)
 	}
 	return out, rows.Err()
 }
@@ -265,6 +423,10 @@ func spanWhere(q SpanQuery) (string, []any) {
 	if q.Service != "" {
 		clauses = append(clauses, `json_extract(resource_attrs, '$."service.name"') = ?`)
 		args = append(args, q.Service)
+	}
+	if q.StatusCode != 0 {
+		clauses = append(clauses, "status_code = ?")
+		args = append(args, q.StatusCode)
 	}
 	if q.From > 0 {
 		clauses = append(clauses, "start_ns >= ?")
@@ -518,14 +680,40 @@ CREATE TABLE IF NOT EXISTS logs (
     created_at     INTEGER DEFAULT (unixepoch())
 );
 CREATE TABLE IF NOT EXISTS anomalies (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    metric_name TEXT    NOT NULL,
-    value       REAL,
-    z_score     REAL,
-    mean        REAL,
-    stddev      REAL,
-    algorithm   TEXT,
-    detected_at INTEGER DEFAULT (unixepoch())
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id     TEXT    DEFAULT '',
+    signal_type   TEXT    DEFAULT 'metric',
+    detector_name TEXT    DEFAULT '',
+    metric_name   TEXT    NOT NULL,
+    value         REAL,
+    z_score       REAL,
+    mean          REAL,
+    stddev        REAL,
+    algorithm     TEXT,
+    severity      TEXT    DEFAULT 'warning',
+    description   TEXT    DEFAULT '',
+    detected_at   INTEGER DEFAULT (unixepoch())
+);
+CREATE TABLE IF NOT EXISTS trace_fingerprints (
+    hash             TEXT    PRIMARY KEY,
+    root_service     TEXT    NOT NULL,
+    edge_list        TEXT,
+    occurrence_count INTEGER DEFAULT 0,
+    first_seen_at    INTEGER DEFAULT (unixepoch()),
+    last_seen_at     INTEGER DEFAULT (unixepoch()),
+    is_baseline      INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS error_signatures (
+    hash             TEXT    PRIMARY KEY,
+    service          TEXT    NOT NULL,
+    error_type       TEXT,
+    http_status      TEXT,
+    operation        TEXT,
+    occurrence_count INTEGER DEFAULT 0,
+    baseline_rate    REAL    DEFAULT 0,
+    first_seen_at    INTEGER DEFAULT (unixepoch()),
+    last_seen_at     INTEGER DEFAULT (unixepoch()),
+    is_baseline      INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS entities (
     entity_type  TEXT NOT NULL,

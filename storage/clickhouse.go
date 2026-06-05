@@ -254,7 +254,9 @@ func (b *ClickHouseBackend) QueryLogs(ctx context.Context, q LogQuery) ([]LogRow
 
 func (b *ClickHouseBackend) QueryAnomalies(ctx context.Context, lim int) ([]AnomalyRow, error) {
 	rows, err := b.db.QueryContext(ctx,
-		`SELECT metric_name, value, z_score, mean, stddev, algorithm, toUnixTimestamp(detected_at)
+		`SELECT entity_id, signal_type, detector_name, metric_name,
+		        value, z_score, mean, stddev, algorithm, severity, description,
+		        toUnixTimestamp(detected_at)
 		 FROM anomalies ORDER BY detected_at DESC LIMIT ?`, limit(lim))
 	if err != nil {
 		return nil, err
@@ -263,7 +265,10 @@ func (b *ClickHouseBackend) QueryAnomalies(ctx context.Context, lim int) ([]Anom
 	var out []AnomalyRow
 	for rows.Next() {
 		var r AnomalyRow
-		if err := rows.Scan(&r.MetricName, &r.Value, &r.Score, &r.Mean, &r.StdDev, &r.Algorithm, &r.DetectedAt); err != nil {
+		if err := rows.Scan(
+			&r.EntityID, &r.SignalType, &r.DetectorName, &r.MetricName,
+			&r.Value, &r.Score, &r.Mean, &r.StdDev, &r.Algorithm, &r.Severity, &r.Description, &r.DetectedAt,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -281,6 +286,21 @@ func (b *ClickHouseBackend) QueryEntities(_ context.Context, _ string) ([]Entity
 	return nil, nil
 }
 func (b *ClickHouseBackend) QueryTopology(_ context.Context) ([]TopologyEdge, error) {
+	return nil, nil
+}
+
+// Fingerprint / error signature — stubs for ClickHouse (SQLite-only for now).
+func (b *ClickHouseBackend) FlushAnomalies(_ context.Context, _ []AnomalyRow) error { return nil }
+func (b *ClickHouseBackend) UpsertTraceFingerprint(_ context.Context, _ TraceFingerprintRow) error {
+	return nil
+}
+func (b *ClickHouseBackend) QueryTraceFingerprints(_ context.Context, _ string) ([]TraceFingerprintRow, error) {
+	return nil, nil
+}
+func (b *ClickHouseBackend) UpsertErrorSignature(_ context.Context, _ ErrorSignatureRow) error {
+	return nil
+}
+func (b *ClickHouseBackend) QueryErrorSignatures(_ context.Context, _ string) ([]ErrorSignatureRow, error) {
 	return nil, nil
 }
 
