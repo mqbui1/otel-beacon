@@ -15,7 +15,7 @@ type Detector interface {
 	Check(entity, name string, value float64) *AnomalyRow
 }
 
-const anomalyCooldown = 5 * time.Minute
+const anomalyCooldown = 15 * time.Minute
 
 func entityKey(entity, name string) string { return entity + "\x00" + name }
 
@@ -53,7 +53,7 @@ func (d *ZScoreDetector) Check(entity, name string, value float64) *AnomalyRow {
 	defer d.mu.Unlock()
 	win := appendWindow(d.windows[key], value, d.windowSize)
 	d.windows[key] = win
-	if len(win) < 10 {
+	if len(win) < 30 {
 		return nil
 	}
 	mean, stddev := meanStddev(win)
@@ -100,7 +100,7 @@ func (d *MADDetector) Check(entity, name string, value float64) *AnomalyRow {
 	defer d.mu.Unlock()
 	win := appendWindow(d.windows[key], value, d.windowSize)
 	d.windows[key] = win
-	if len(win) < 10 {
+	if len(win) < 30 {
 		return nil
 	}
 	med := median(win)

@@ -159,11 +159,12 @@ if CONTINUOUS:
             spike = phase < SPIKE_WINDOW
             error = phase < ERROR_WINDOW
             send_round(spike, error)
-            # Send INFO logs from all services every round; ERROR during spike
+            # Send logs every round: ERROR for payment-service during full spike,
+            # WARN for cart-service during spike, INFO otherwise
             for svc in SERVICES:
-                if error and svc == "payment-service":
+                if spike and svc == "payment-service":
                     send_logs(svc, "ERROR")
-                elif spike and svc in ("payment-service", "cart-service"):
+                elif spike and svc == "cart-service":
                     send_logs(svc, "WARN")
                 else:
                     send_logs(svc, "INFO")

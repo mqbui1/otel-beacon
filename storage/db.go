@@ -264,9 +264,19 @@ func (s *Storage) InsertMetrics(_ context.Context, md pmetric.Metrics) error {
 
 func (s *Storage) enqueueMetric(resJSON string, m pmetric.Metric) {
 	entityID := extractServiceName(resJSON)
-	// Skip anomaly detection for monotonic counters (e.g. cpu.time, pod.cpu.time).
-	// These are always-increasing and produce constant noise in rolling-window detectors.
+	// Skip anomaly detection for monotonic counters (always-increasing → constant noise).
 	skipDetection := m.Type() == pmetric.MetricTypeSum && m.Sum().IsMonotonic()
+	// Also skip JVM bookkeeping metrics that fluctuate heavily during warmup but carry
+	// no operational signal (class loading counts, GC bookkeeping, thread counts, etc.).
+	switch m.Name() {
+	case "jvm.class.count", "jvm.class.loaded", "jvm.class.unloaded",
+		"jvm.gc.duration",
+		"jvm.thread.count", "jvm.thread.daemon.count",
+		"jvm.cpu.count",
+		"jvm.memory.committed", "jvm.memory.limit",
+		"process.runtime.jvm.classes.loaded":
+		skipDetection = true
+	}
 	enqueue := func(tsNs int64, value float64, attrs pcommon.Map) {
 		row := MetricRow{
 			Name:          m.Name(),

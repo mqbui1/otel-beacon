@@ -145,7 +145,7 @@ func (s *queryServer) entitySignals(w http.ResponseWriter, r *http.Request) {
 	logRows, logErr := s.store.QueryLogs(ctx, storage.LogQuery{
 		Service: entityID,
 		From:    fromNs,
-		Limit:   50,
+		Limit:   200,
 	})
 
 	for _, err := range []error{spanErr, metricErr, logErr} {

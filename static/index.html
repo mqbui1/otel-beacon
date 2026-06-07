@@ -399,7 +399,7 @@
   <div class="logo"><span>OTel</span><em>Beacon</em></div>
   <nav>
     <button class="active" onclick="switchTab('services',this)">Services</button>
-    <button onclick="switchTab('anomalies',this)">Incidents</button>
+    <button id="nav-anomalies" onclick="switchTab('anomalies',this)">Anomalies</button>
     <button onclick="switchTab('traces',this)">Traces</button>
     <button onclick="switchTab('metrics',this)">Metrics</button>
     <button onclick="switchTab('logs',this)">Logs</button>
@@ -591,42 +591,7 @@
 <!-- ══ ANOMALIES ═══════════════════════════════════════════════════════════ -->
 <div class="tab" id="tab-anomalies">
 
-  <!-- View toggle -->
-  <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
-    <div style="display:flex;background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden">
-      <button id="anom-view-incidents" onclick="setAnomView('incidents')"
-        style="padding:6px 16px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-size:13px;font-weight:500">
-        Incidents
-      </button>
-      <button id="anom-view-raw" onclick="setAnomView('raw')"
-        style="padding:6px 16px;border:none;background:none;color:var(--muted);cursor:pointer;font-size:13px;font-weight:500">
-        Raw Anomalies
-      </button>
-    </div>
-    <span class="dim" id="anom-view-hint">Grouped by entity · 30-min windows</span>
-  </div>
-
-  <!-- ── Incidents view ── -->
-  <div id="anom-incidents-view">
-    <div class="stats">
-      <div class="stat"><div class="val" id="s-inc-count">—</div><div class="lbl">Incidents</div></div>
-      <div class="stat"><div class="val" id="s-inc-crit" style="color:var(--red)">—</div><div class="lbl">Critical</div></div>
-      <div class="stat"><div class="val" id="s-inc-entities">—</div><div class="lbl">Entities Affected</div></div>
-      <div class="stat"><div class="val" id="s-inc-errsig" style="color:var(--orange)">—</div><div class="lbl">New Error Sigs</div></div>
-      <div class="stat"><div class="val" id="s-inc-trace" style="color:var(--cyan)">—</div><div class="lbl">Trace Drift</div></div>
-    </div>
-    <div class="card">
-      <table>
-        <thead><tr>
-          <th>Severity</th><th>Entity</th><th>Signals</th><th>Anomalies</th><th>Window</th><th>Latest</th><th></th>
-        </tr></thead>
-        <tbody id="incidents-body"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- ── Raw anomalies view ── -->
-  <div id="anom-raw-view" style="display:none">
+  <div>
     <div class="filters">
       <label>Signal Type
         <select id="f-anom-signal">
@@ -706,7 +671,7 @@
           <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#ef4444"></div>Error Rate</div>
           <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#f97316"></div>Error Sig</div>
           <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#eab308"></div>Trace Drift</div>
-          <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#a78bfa;border-style:dashed"></div>New / Latency</div>
+          <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#f97316"></div>Metric (warning)</div>
         </div>
       </div>
 
@@ -721,17 +686,49 @@
       </div>
     </div>
 
-    <!-- Right: entity detail panel -->
+    <!-- Right: side panel — incidents by default, service detail on select -->
     <div class="svc-detail-card" id="svc-detail-card">
-      <div class="svc-detail-hdr">
-        <div>
-          <h3 id="svc-detail-name">Select a service</h3>
-          <div class="dim" id="svc-detail-meta">Click a node in the map or a row in the table</div>
+
+      <!-- ── Incidents panel (default) ── -->
+      <div id="svc-incidents-panel">
+        <div class="svc-detail-hdr" style="justify-content:space-between">
+          <h3 style="margin:0;font-size:14px">Active Incidents</h3>
+          <button onclick="document.getElementById('nav-anomalies').click()"
+            style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:11px;padding:0">
+            Raw Anomalies →
+          </button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0;padding:8px 12px;border-bottom:1px solid var(--border)">
+          <div class="stat" style="padding:6px 4px"><div class="val" id="s-inc-count" style="font-size:18px">—</div><div class="lbl">Incidents</div></div>
+          <div class="stat" style="padding:6px 4px"><div class="val" id="s-inc-crit" style="color:var(--red);font-size:18px">—</div><div class="lbl">Critical</div></div>
+          <div class="stat" style="padding:6px 4px"><div class="val" id="s-inc-entities" style="font-size:18px">—</div><div class="lbl">Affected</div></div>
+          <div class="stat" style="padding:6px 4px"><div class="val" id="s-inc-errsig" style="color:var(--orange);font-size:18px">—</div><div class="lbl">Error Sigs</div></div>
+          <div class="stat" style="padding:6px 4px"><div class="val" id="s-inc-trace" style="color:var(--cyan);font-size:18px">—</div><div class="lbl">Trace Drift</div></div>
+        </div>
+        <div style="overflow-y:auto;max-height:calc(100vh - 360px)">
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            <tbody id="incidents-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+          </table>
         </div>
       </div>
-      <div id="svc-detail-body">
-        <div class="svc-empty">Select a service to view recent traces, metrics, and logs.</div>
+
+      <!-- ── Service detail panel (shown on selectService) ── -->
+      <div id="svc-service-panel" style="display:none">
+        <div class="svc-detail-hdr" style="align-items:flex-start">
+          <div style="flex:1;min-width:0">
+            <button onclick="showIncidentsSidePanel()"
+              style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:11px;padding:0 0 4px 0;display:block">
+              ← Incidents
+            </button>
+            <h3 id="svc-detail-name" style="margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">—</h3>
+            <div class="dim" id="svc-detail-meta">—</div>
+          </div>
+        </div>
+        <div id="svc-detail-body">
+          <div class="svc-empty">Loading…</div>
+        </div>
       </div>
+
     </div>
   </div>
 </div>
@@ -791,8 +788,8 @@ function loadCurrent() {
   if (currentTab === 'traces')         loadTraces();
   else if (currentTab === 'metrics')   loadMetrics();
   else if (currentTab === 'logs')      loadLogs();
-  else if (currentTab === 'anomalies') { if (_anomView === 'incidents') loadIncidents(); else loadAnomalies(); }
-  else if (currentTab === 'services')  loadServices();
+  else if (currentTab === 'anomalies') loadAnomalies();
+  else if (currentTab === 'services')  { loadServices(); loadIncidents(); }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -809,6 +806,13 @@ function fmtDur(ms) {
   if (ms >= 1000) return (ms / 1000).toFixed(2) + 's';
   if (ms >= 1)    return ms.toFixed(1) + 'ms';
   return (ms * 1000).toFixed(0) + 'µs';
+}
+
+function fmtAge(epochSec) {
+  const s = Math.floor(Date.now() / 1000) - epochSec;
+  if (s < 60)   return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s/60)}m ago`;
+  return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m ago`;
 }
 
 function fmtVal(n) {
@@ -1502,33 +1506,19 @@ const SIGNAL_PRIORITY = {
   missing_service: 6, error_signature: 5, span_error_rate: 4, trace_drift: 3, span_latency: 2, metric: 1,
 };
 
-let _anomView = 'incidents';
-
-function setAnomView(view) {
-  _anomView = view;
-  const incBtn = document.getElementById('anom-view-incidents');
-  const rawBtn = document.getElementById('anom-view-raw');
-  const hint   = document.getElementById('anom-view-hint');
-  if (view === 'incidents') {
-    incBtn.style.background = 'var(--accent)'; incBtn.style.color = '#fff';
-    rawBtn.style.background = 'none';          rawBtn.style.color = 'var(--muted)';
-    document.getElementById('anom-incidents-view').style.display = '';
-    document.getElementById('anom-raw-view').style.display = 'none';
-    hint.textContent = 'Grouped by entity · 30-min windows';
-    loadIncidents();
-  } else {
-    rawBtn.style.background = 'var(--accent)'; rawBtn.style.color = '#fff';
-    incBtn.style.background = 'none';          incBtn.style.color = 'var(--muted)';
-    document.getElementById('anom-incidents-view').style.display = 'none';
-    document.getElementById('anom-raw-view').style.display = '';
-    hint.textContent = 'All raw anomaly signals';
-    loadAnomalies();
-  }
-}
 
 async function loadIncidents() {
-  const res = await api('/v1/incidents');
-  const incidents = res?.data || [];
+  const [res, entRes] = await Promise.all([
+    api('/v1/incidents'),
+    _currentEnv ? api(`/v1/entities?type=service&env=${encodeURIComponent(_currentEnv)}`) : Promise.resolve(null),
+  ]);
+  let incidents = res?.data || [];
+
+  // Filter to current environment — incidents don't carry env directly, so match via entity IDs
+  if (_currentEnv && entRes?.data?.length) {
+    const envIds = new Set(entRes.data.map(e => e.entity_id));
+    incidents = incidents.filter(i => envIds.has(i.entity_id));
+  }
 
   const critCount     = incidents.filter(i => i.severity === 'critical').length;
   const entitySet     = new Set(incidents.map(i => i.entity_id));
@@ -1543,30 +1533,27 @@ async function loadIncidents() {
 
   const tbody = document.getElementById('incidents-body');
   if (!incidents.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty">No incidents — background workers start after ~2 min of data accumulation…</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4" class="empty" style="padding:16px;text-align:center">No incidents yet — detectors warm up after ~8 min of data.</td></tr>';
     return;
   }
 
   tbody.innerHTML = incidents.map(inc => {
     const sevCls = inc.severity === 'critical' ? 'b-high' : 'b-med';
-    // Build signal badges sorted by priority desc
     const sigBadges = Object.entries(inc.signals || {})
       .sort(([a],[b]) => (SIGNAL_PRIORITY[b]||0) - (SIGNAL_PRIORITY[a]||0))
       .map(([sig, cnt]) => {
         const cls = SIGNAL_BADGE[sig] || 'b-info';
         const lbl = SIGNAL_LABELS[sig] || sig;
-        return `<span class="badge ${cls}" style="margin-right:3px">${lbl}${cnt>1?` ×${cnt}`:''}</span>`;
+        return `<span class="badge ${cls}" style="margin-right:2px;font-size:9px">${lbl}${cnt>1?` ×${cnt}`:''}</span>`;
       }).join('');
-    const windowStr = fmtTime(inc.bucket_ts * 1e9) + ' – ' + fmtTime((inc.bucket_ts + 1800) * 1e9);
-    const latestStr = fmtTime(inc.latest_ts * 1e9);
-    return `<tr>
-      <td><span class="badge ${sevCls}">${inc.severity}</span></td>
-      <td class="mono" style="font-weight:600">${esc(inc.entity_id)}</td>
-      <td>${sigBadges}</td>
-      <td><span class="badge b-info">${inc.anomaly_count}</span></td>
-      <td class="dim mono" style="font-size:11px;white-space:nowrap">${windowStr}</td>
-      <td class="dim mono">${latestStr}</td>
-      <td><button class="btn-rca-sm" onclick="openRCAFromAnomaly('${esc(inc.entity_id)}',${inc.latest_ts},${inc.bucket_ts})">Analyze</button></td>
+    return `<tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+      <td style="padding:6px 8px;white-space:nowrap"><span class="badge ${sevCls}" style="font-size:10px">${inc.severity}</span></td>
+      <td style="padding:6px 4px;max-width:110px;overflow:hidden">
+        <div style="font-family:monospace;font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(inc.entity_id)}">${esc(inc.entity_id)}</div>
+        <div style="font-size:10px;color:var(--muted)">${fmtAge(inc.latest_ts)}</div>
+      </td>
+      <td style="padding:6px 4px">${sigBadges}</td>
+      <td style="padding:6px 8px;white-space:nowrap"><button class="btn-rca-sm" onclick="openRCAFromAnomaly('${esc(inc.entity_id)}',${inc.latest_ts},${inc.bucket_ts})">RCA</button></td>
     </tr>`;
   }).join('');
 }
@@ -1622,10 +1609,12 @@ function openRCAFromAnomaly(entityId, detectedAtSecs, bucketTs) {
 
 // ── Services / Entity Map ───────────────────────────────────────────────────
 let _svcEntities     = [];
-let _svcEdges        = [];
-let _anomalyByEntity = {}; // entityId → worst signal_type
-let _currentEnv      = '';
-let _d3Simulation    = null;
+let _svcEdges           = [];
+let _anomalyByEntity    = {}; // entityId → worst signal_type
+let _currentEnv         = '';
+let _d3Simulation       = null;
+let _topoNodePositions  = {}; // entityId → {x,y}  — persists across renders
+let _topoFingerprint    = ''; // last rendered node+edge set
 window._ndService    = null;
 
 async function loadEnvironments() {
@@ -1633,17 +1622,21 @@ async function loadEnvironments() {
   const envs = res?.environments || [];
   const sel = document.getElementById('env-sel');
   if (!sel) return;
-  // On first load, default to the env with the most entities (most active)
+  // On first load, default to the env with the most recently-active entity
   if (!_currentEnv && envs.length) {
     if (envs.length === 1) {
       _currentEnv = envs[0];
     } else {
-      // Pick whichever env has the most services
-      const counts = await Promise.all(envs.map(e =>
-        api(`/v1/entities?type=service&env=${encodeURIComponent(e)}`).then(r => ({ env: e, n: r?.count || 0 }))
+      // Pick whichever env has the most recent last_seen_ns across its entities
+      const results = await Promise.all(envs.map(e =>
+        api(`/v1/entities?type=service&env=${encodeURIComponent(e)}`).then(r => {
+          const entities = r?.data || [];
+          const latest = entities.reduce((mx, ent) => Math.max(mx, ent.last_seen_ns || 0), 0);
+          return { env: e, latest };
+        })
       ));
-      counts.sort((a, b) => b.n - a.n);
-      _currentEnv = counts[0].env;
+      results.sort((a, b) => b.latest - a.latest);
+      _currentEnv = results[0].env;
     }
   }
   sel.innerHTML = '<option value="">All environments</option>' +
@@ -1671,9 +1664,14 @@ async function loadServices() {
   _anomalyByEntity = {};
   (anomRes?.data || []).forEach(a => {
     if (!a.entity_id) return;
-    if (!_anomalyByEntity[a.entity_id]) _anomalyByEntity[a.entity_id] = { signal: null, cpu: 0 };
+    if (!_anomalyByEntity[a.entity_id]) _anomalyByEntity[a.entity_id] = { signal: null, severity: null, cpu: 0 };
     const cur = _anomalyByEntity[a.entity_id];
-    if (!cur.signal || (sigPrio[a.signal_type]||0) > (sigPrio[cur.signal]||0)) cur.signal = a.signal_type;
+    if (!cur.signal || (sigPrio[a.signal_type]||0) > (sigPrio[cur.signal]||0)) {
+      cur.signal = a.signal_type;
+      cur.severity = a.severity;
+    } else if (cur.signal === a.signal_type && a.severity === 'critical') {
+      cur.severity = 'critical'; // escalate to critical within same signal type
+    }
     if (a.metric_name === 'container.cpu.usage' && a.value > cur.cpu) cur.cpu = a.value;
   });
 
@@ -1690,22 +1688,59 @@ async function loadServices() {
 function nodeHealthState(entityId) {
   const sig = _anomalyByEntity[entityId]?.signal;
   if (!sig) return 'topo-healthy';
-  if (sig === 'span_error_rate') return 'topo-errorrate';
-  if (sig === 'error_signature') return 'topo-error';
-  if (sig === 'trace_drift')     return 'topo-drift';
-  if (sig === 'span_latency')    return 'topo-latency';
+  if (sig === 'span_error_rate')  return 'topo-errorrate';
+  if (sig === 'error_signature')  return 'topo-error';
+  if (sig === 'missing_service')  return 'topo-error';
+  if (sig === 'trace_drift')      return 'topo-drift';
+  if (sig === 'span_latency')     return 'topo-latency';
+  if (sig === 'metric') {
+    const sev = _anomalyByEntity[entityId]?.severity;
+    return sev === 'critical' ? 'topo-errorrate' : 'topo-latency';
+  }
   return 'topo-new';
 }
 
 function renderServiceMap(entities, edges) {
   const container = document.getElementById('topo-container');
-  container.querySelector('svg')?.remove();
   const hint = document.getElementById('svc-map-hint');
   if (!entities.length) {
     hint.textContent = 'No services discovered yet — waiting for traces…';
+    container.querySelector('svg')?.remove();
+    _topoFingerprint = '';
     return;
   }
   hint.textContent = `${entities.length} services · ${edges.length} edges`;
+
+  // Compute topology fingerprint to detect structural changes
+  const nodeIds = entities.map(e => e.entity_id).sort();
+  const nodeSet = new Set(nodeIds);
+  const filteredEdges = edges.filter(e => nodeSet.has(e.source_service) && nodeSet.has(e.target_service));
+  const edgeKeys = filteredEdges.map(e => `${e.source_service}→${e.target_service}`).sort();
+  const fingerprint = nodeIds.join(',') + '|' + edgeKeys.join(',');
+
+  // Same topology → fast visual-only update, no DOM rebuild or re-simulation
+  if (fingerprint === _topoFingerprint && container.querySelector('svg')) {
+    const svgSel = d3.select(container).select('svg');
+    svgSel.selectAll('.topo-node').attr('class', d => 'topo-node ' + nodeHealthState(d.id));
+    const edgeData = {};
+    filteredEdges.forEach(e => {
+      edgeData[`${e.source_service}→${e.target_service}`] = {
+        err_rate: e.call_count > 0 ? e.error_count / e.call_count : 0,
+        call_count: e.call_count,
+      };
+    });
+    svgSel.selectAll('line').each(function(d) {
+      const k = `${d.source.id||d.source}→${d.target.id||d.target}`;
+      const ed = edgeData[k] || {err_rate:0, call_count:0};
+      d3.select(this)
+        .attr('class', ed.err_rate > 0.1 ? 'topo-edge-hot' : ed.err_rate > 0.05 ? 'topo-edge-err' : 'topo-edge')
+        .attr('stroke-width', Math.max(1.5, Math.min(5, ed.call_count / 40)))
+        .attr('marker-end', ed.err_rate > 0.1 ? 'url(#arr-red)' : ed.err_rate > 0.02 ? 'url(#arr-orange)' : 'url(#arr-green)');
+    });
+    return;
+  }
+  _topoFingerprint = fingerprint;
+  container.querySelector('svg')?.remove();
 
   // Parse k8s node groupings from entity attrs
   const entityK8sNode = {};
@@ -1719,24 +1754,25 @@ function renderServiceMap(entities, edges) {
   const defs = svg.append('defs');
   [['green','#4ecfb3'],['orange','#f97316'],['red','#ef4444']].forEach(([id, color]) => {
     defs.append('marker').attr('id','arr-'+id)
-      .attr('markerWidth',6).attr('markerHeight',6)
-      .attr('refX',6).attr('refY',3).attr('orient','auto')
-      .append('path').attr('d','M0,0 L0,6 L6,3 Z').attr('fill',color);
+      .attr('markerWidth',2.5).attr('markerHeight',2.5)
+      .attr('refX',2.5).attr('refY',1.25).attr('orient','auto')
+      .append('path').attr('d','M0,0 L0,2.5 L2.5,1.25 Z').attr('fill',color);
   });
 
   const g = svg.append('g');
   svg.call(d3.zoom().scaleExtent([0.3,3]).on('zoom', e => g.attr('transform', e.transform)));
 
-  const nodeSet = new Set(entities.map(e => e.entity_id));
-  const nodes   = entities.map(e => ({id: e.entity_id, last_seen_ns: e.last_seen_ns}));
-  const links   = edges
-    .filter(e => nodeSet.has(e.source_service) && nodeSet.has(e.target_service))
-    .map(e => ({
-      source:     e.source_service,
-      target:     e.target_service,
-      err_rate:   e.call_count > 0 ? e.error_count / e.call_count : 0,
-      call_count: e.call_count,
-    }));
+  const nodes = entities.map(e => {
+    const saved = _topoNodePositions[e.entity_id];
+    return {id: e.entity_id, last_seen_ns: e.last_seen_ns,
+      ...(saved ? {x: saved.x, y: saved.y} : {})};
+  });
+  const links = filteredEdges.map(e => ({
+    source:     e.source_service,
+    target:     e.target_service,
+    err_rate:   e.call_count > 0 ? e.error_count / e.call_count : 0,
+    call_count: e.call_count,
+  }));
 
   // K8s zone backgrounds — group nodes by node name
   const zones = {};
@@ -1822,7 +1858,7 @@ function renderServiceMap(entities, edges) {
     .attr('dy', '40px')
     .attr('font-size', '10px')
     .attr('fill', '#e2e8f0')
-    .text(d => d.id.replace('spring-petclinic-','').slice(0, 16));
+    .text(d => d.id.replace('spring-petclinic-','').slice(0, 22));
   // Error rate badge inside circle when degraded
   node.each(function(d) {
     const sig = _anomalyByEntity[d.id]?.signal;
@@ -1840,6 +1876,10 @@ function renderServiceMap(entities, edges) {
   let edgesShown = false;
   _d3Simulation.on('tick', () => {
     if (!edgesShown) { link.attr('opacity', null); edgesShown = true; }
+    // Cache positions so next render can seed from them (prevents layout jump on refresh)
+    if (_d3Simulation.alpha() < 0.05) {
+      nodes.forEach(n => { _topoNodePositions[n.id] = {x: n.x, y: n.y}; });
+    }
     const R = 24; // node circle radius — shorten lines so arrowhead is visible
     link
       .attr('x1', d => { const dx=d.target.x-d.source.x, dy=d.target.y-d.source.y, l=Math.hypot(dx,dy)||1; return d.source.x+dx/l*R; })
@@ -1875,7 +1915,7 @@ async function openNodeDrawer(d) {
   const state  = nodeHealthState(d.id);
   const stateLabels = {
     'topo-healthy':'Healthy','topo-errorrate':'Error Rate','topo-error':'Error Sig',
-    'topo-drift':'Trace Drift','topo-latency':'Latency','topo-new':'New',
+    'topo-drift':'Trace Drift','topo-latency':'Metric / Latency','topo-new':'New',
   };
   const stateColors = {
     'topo-healthy':'#4ecfb3','topo-errorrate':'#ef4444','topo-error':'#f97316',
@@ -1893,17 +1933,23 @@ async function openNodeDrawer(d) {
     <div class="nd-row nd-metrics-placeholder"><span class="nd-lbl" style="color:var(--muted);font-style:italic">fetching metrics…</span></div>`;
   document.getElementById('node-drawer').style.display = 'block';
 
-  // Fetch last 5 min of infra metrics for this service
+  // Fetch last 5 min of metrics for this service (no prefix filter — covers JVM + container)
   const fromNs = Math.floor((Date.now() - 5 * 60 * 1000) * 1e6);
-  const mRes = await api(`/v1/query/metrics?service=${encodeURIComponent(d.id)}&prefix=container,http&limit=200&from=${fromNs}`);
+  const mRes = await api(`/v1/query/metrics?service=${encodeURIComponent(d.id)}&limit=500&from=${fromNs}`);
 
-  let cpu = 0, mem = 0, latencyP95 = 0;
+  let cpu = 0, mem = 0;
   const latencies = [];
   (mRes?.data || []).forEach(m => {
-    if (m.name === 'container.cpu.usage'  && m.value > cpu) cpu = m.value;
-    if (m.name === 'container.memory.rss' && m.value > mem) mem = m.value;
+    // CPU — container or JVM process
+    if ((m.name === 'container.cpu.usage' || m.name === 'process.cpu.usage' ||
+         m.name === 'jvm.cpu.recent_utilization') && m.value > cpu) cpu = m.value;
+    // Memory — container RSS or JVM heap used
+    if ((m.name === 'container.memory.rss' || m.name === 'jvm.memory.used') && m.value > mem) mem = m.value;
+    // Latency — old semconv (ms) or new semconv (seconds)
     if (m.name === 'http.server.duration') latencies.push(m.value);
+    if (m.name === 'http.server.request.duration') latencies.push(m.value * 1000);
   });
+  let latencyP95 = 0;
   if (latencies.length) {
     latencies.sort((a,b) => a-b);
     latencyP95 = latencies[Math.floor(latencies.length * 0.95)] || latencies[latencies.length-1];
@@ -1915,7 +1961,7 @@ async function openNodeDrawer(d) {
     ${cpu > 0 ? `<div class="nd-row"><span class="nd-lbl">CPU</span><span class="nd-val" style="color:${cpuColor}">${(cpu*100).toFixed(1)}%</span></div>` : ''}
     ${mem > 0 ? `<div class="nd-row"><span class="nd-lbl">Memory</span><span class="nd-val">${memMB} MB</span></div>` : ''}
     ${latencyP95 > 0 ? `<div class="nd-row"><span class="nd-lbl">P95 latency</span><span class="nd-val" style="color:var(--cyan)">${latencyP95.toFixed(0)} ms</span></div>` : ''}
-    ${cpu === 0 && mem === 0 ? `<div class="nd-row"><span class="nd-lbl" style="color:var(--muted);font-style:italic">no metrics in last 5m</span></div>` : ''}`;
+    ${cpu === 0 && mem === 0 && latencyP95 === 0 ? `<div class="nd-row"><span class="nd-lbl" style="color:var(--muted);font-style:italic">no metrics in last 5m</span></div>` : ''}`;
 
   const placeholder = document.querySelector('.nd-metrics-placeholder');
   if (placeholder) placeholder.outerHTML = metricsHTML;
@@ -1959,8 +2005,15 @@ function renderServiceTable(entities, edges) {
   }).join('');
 }
 
+function showIncidentsSidePanel() {
+  document.getElementById('svc-incidents-panel').style.display = '';
+  document.getElementById('svc-service-panel').style.display = 'none';
+}
+
 async function selectService(serviceId) {
   if (!serviceId) return;
+  document.getElementById('svc-incidents-panel').style.display = 'none';
+  document.getElementById('svc-service-panel').style.display = '';
   document.getElementById('svc-detail-name').textContent = serviceId;
   document.getElementById('svc-detail-meta').textContent = 'Loading signals…';
   document.getElementById('svc-detail-body').innerHTML = '<div class="svc-empty">Loading…</div>';
@@ -2102,6 +2155,7 @@ async function runRCA(withAI) {
   document.getElementById('rca-modal-meta').textContent =
     `${_rcaEntityID} · ${win/60}min window · ${nCauses} candidate${nCauses !== 1 ? 's' : ''} found`;
   document.getElementById('rca-body').innerHTML = renderRCAResult(res);
+  loadRCAEvidence(res); // async — populates correlated evidence section
 }
 
 async function runRCAWithAI() {
@@ -2399,7 +2453,121 @@ function renderRCAResult(r) {
         </div>
       </div>
     </div>
+  </div>
+  <!-- Full-width correlated evidence section -->
+  <div style="margin-top:20px;border-top:1px solid var(--border);padding-top:16px">
+    <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px">
+      Correlated Evidence — Incident Window
+    </div>
+    <div id="rca-evidence" style="color:var(--muted);font-size:12px;padding:8px 0">Loading signals…</div>
   </div>`;
+}
+
+async function loadRCAEvidence(r) {
+  const fromNs = r.incident_ts - r.window_secs * 1e9;
+  const toNs   = r.incident_ts;
+  const svc    = r.entity;
+
+  const [spanRes, logRes, metricRes] = await Promise.all([
+    api(`/v1/query/spans?service=${encodeURIComponent(svc)}&from=${fromNs}&to=${toNs}&limit=50`),
+    api(`/v1/query/logs?service=${encodeURIComponent(svc)}&from=${fromNs}&to=${toNs}&limit=100`),
+    api(`/v1/query/metrics?service=${encodeURIComponent(svc)}&from=${fromNs}&to=${toNs}&limit=200`),
+  ]);
+
+  const el = document.getElementById('rca-evidence');
+  if (!el) return;
+
+  const spans   = spanRes?.data   || [];
+  const logs    = logRes?.data    || [];
+  const metrics = metricRes?.data || [];
+
+  const errSpans = spans.filter(s => s.status_code === 2);
+  const notableLog = logs.filter(l => ['ERROR','FATAL','WARN','WARNING'].includes((l.severity||'').toUpperCase()));
+
+  function evSpansHTML() {
+    if (!spans.length) return `<div style="padding:12px;color:var(--muted);font-size:12px">No spans in incident window.</div>`;
+    return `<table style="width:100%;border-collapse:collapse;font-size:12px">
+      ${spans.slice(0, 30).map(s => {
+        const isErr = s.status_code === 2;
+        return `
+        <tr style="border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer" onclick="closeRCA();openTrace('${esc(s.trace_id)}')">
+          <td style="padding:5px 10px;font-family:monospace;font-size:11px;max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(s.name)}">${esc(s.name)}</td>
+          <td style="padding:5px 10px">${isErr ? '<span class="badge b-err" style="font-size:10px">ERR</span>' : '<span style="color:var(--green);font-size:10px;font-weight:600">OK</span>'}</td>
+          <td style="padding:5px 10px;color:var(--cyan);font-family:monospace;font-size:11px">${fmtDur(s.duration_ms)}</td>
+          <td style="padding:5px 10px;color:var(--muted);font-family:monospace;font-size:10px;white-space:nowrap">${fmtTime(s.start_ns)}</td>
+        </tr>`;
+      }).join('')}
+    </table>`;
+  }
+
+  function evLogsHTML() {
+    const display = notableLog.length ? notableLog : logs;
+    if (!display.length) return `<div style="padding:12px;color:var(--muted);font-size:12px">No logs in incident window.</div>`;
+    return `<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px;min-width:100%">
+      ${display.slice(0, 30).map(l => `
+        <tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+          <td style="padding:5px 10px;color:var(--muted);font-family:monospace;font-size:10px;white-space:nowrap">${fmtTime(l.timestamp_ns)}</td>
+          <td style="padding:5px 10px;white-space:nowrap">${sevBadge(l.severity)}</td>
+          <td style="padding:5px 10px;font-size:11px;white-space:nowrap">${esc(l.body)||'—'}</td>
+        </tr>`).join('')}
+    </table></div>`;
+  }
+
+  function evMetricsHTML() {
+    if (!metrics.length) return `<div style="padding:12px;color:var(--muted);font-size:12px">No metrics in incident window.</div>`;
+    const byName = {};
+    metrics.forEach(m => { (byName[m.name] = byName[m.name] || []).push(m); });
+    return `<table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="border-bottom:1px solid var(--border)">
+        <th style="padding:5px 10px;text-align:left;color:var(--muted);font-weight:500">Metric</th>
+        <th style="padding:5px 10px;text-align:right;color:var(--muted);font-weight:500">Min</th>
+        <th style="padding:5px 10px;text-align:right;color:var(--muted);font-weight:500">Max</th>
+        <th style="padding:5px 10px;text-align:right;color:var(--muted);font-weight:500">Avg</th>
+        <th style="padding:5px 10px;text-align:right;color:var(--muted);font-weight:500">Pts</th>
+      </tr></thead>
+      <tbody>
+        ${Object.entries(byName).map(([name, pts]) => {
+          const vals = pts.map(p => p.value);
+          const mn = Math.min(...vals), mx = Math.max(...vals), avg = vals.reduce((a,b)=>a+b,0)/vals.length;
+          const isHigh = (name === 'container.cpu.usage' && mx > 0.5) || (name === 'http.server.duration' && mx > 200);
+          return `<tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+            <td style="padding:5px 10px;font-family:monospace;font-size:11px;max-width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(name)}</td>
+            <td style="padding:5px 10px;text-align:right;font-family:monospace;font-size:11px">${fmtVal(mn)}</td>
+            <td style="padding:5px 10px;text-align:right;font-family:monospace;font-size:11px;color:${isHigh?'var(--red)':'var(--fg)'}">${fmtVal(mx)}</td>
+            <td style="padding:5px 10px;text-align:right;font-family:monospace;font-size:11px;color:var(--cyan)">${fmtVal(avg)}</td>
+            <td style="padding:5px 10px;text-align:right;color:var(--muted);font-size:11px">${pts.length}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+  }
+
+  el.innerHTML = `
+    <div class="svc-signals-tabs" style="margin-bottom:0">
+      <button class="svc-sig-tab active" onclick="switchRcaEvTab('spans',this)">
+        Spans <span style="opacity:.7">${spans.length}${errSpans.length ? ' · ' + errSpans.length + ' err' : ''}</span>
+      </button>
+      <button class="svc-sig-tab" onclick="switchRcaEvTab('logs',this)">
+        Logs <span style="opacity:.7">${notableLog.length ? notableLog.length + ' notable' : logs.length}</span>
+      </button>
+      <button class="svc-sig-tab" onclick="switchRcaEvTab('metrics',this)">
+        Metrics <span style="opacity:.7">${Object.keys(Object.fromEntries(metrics.map(m=>[m.name,1]))).length} series</span>
+      </button>
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;max-height:260px;overflow-y:auto">
+      <div id="rca-ev-spans">${evSpansHTML()}</div>
+      <div id="rca-ev-logs"   style="display:none">${evLogsHTML()}</div>
+      <div id="rca-ev-metrics" style="display:none">${evMetricsHTML()}</div>
+    </div>`;
+}
+
+function switchRcaEvTab(name, btn) {
+  btn.closest('.svc-signals-tabs').querySelectorAll('.svc-sig-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  ['spans','logs','metrics'].forEach(n => {
+    const el = document.getElementById('rca-ev-' + n);
+    if (el) el.style.display = n === name ? '' : 'none';
+  });
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
