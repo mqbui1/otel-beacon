@@ -149,6 +149,61 @@ func (b *SQLiteBackend) FlushLogs(ctx context.Context, batch []LogRow) error {
 // ---------------------------------------------------------------------------
 
 func (b *SQLiteBackend) QuerySpans(ctx context.Context, q SpanQuery) ([]SpanRow, error) {
+	// Trace-first mode: fetch N most-recent distinct traces, then return all their spans.
+	// This prevents high-fan-out traces (e.g. Hibernate N+1) from crowding out other traces.
+	if q.Traces > 0 {
+		where, args := spanWhere(q)
+		traceRows, err := b.db.QueryContext(ctx,
+			`SELECT trace_id FROM spans`+where+
+				` GROUP BY trace_id ORDER BY MAX(start_ns) DESC LIMIT ?`,
+			append(args, q.Traces)...,
+		)
+		if err != nil {
+			return nil, err
+		}
+		var traceIDs []string
+		for traceRows.Next() {
+			var tid string
+			if err := traceRows.Scan(&tid); err != nil {
+				traceRows.Close()
+				return nil, err
+			}
+			traceIDs = append(traceIDs, tid)
+		}
+		traceRows.Close()
+		if len(traceIDs) == 0 {
+			return nil, nil
+		}
+		placeholders := "?" + strings.Repeat(",?", len(traceIDs)-1)
+		iargs := make([]any, len(traceIDs))
+		for i, id := range traceIDs {
+			iargs[i] = id
+		}
+		rows, err := b.db.QueryContext(ctx,
+			`SELECT trace_id, span_id, parent_span_id, name, kind,
+				start_ns, end_ns, duration_ms, status_code, status_msg,
+				resource_attrs, span_attrs
+			 FROM spans WHERE trace_id IN (`+placeholders+`) ORDER BY start_ns DESC`,
+			iargs...,
+		)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var out []SpanRow
+		for rows.Next() {
+			var r SpanRow
+			if err := rows.Scan(&r.TraceID, &r.SpanID, &r.ParentSpanID, &r.Name, &r.Kind,
+				&r.StartNs, &r.EndNs, &r.DurationMs, &r.StatusCode, &r.StatusMsg,
+				&r.ResourceAttrs, &r.SpanAttrs,
+			); err != nil {
+				return nil, err
+			}
+			out = append(out, r)
+		}
+		return out, rows.Err()
+	}
+
 	where, args := spanWhere(q)
 	lim := limit(q.Limit)
 	if q.InternalLimit > 0 {

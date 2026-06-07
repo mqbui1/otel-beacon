@@ -483,7 +483,7 @@
   <div class="filters">
     <label>Trace ID<input id="f-trace-id" placeholder="e.g. 8ef696…"></label>
     <label>Span Name<input id="f-span-name" placeholder="GET /owners"></label>
-    <label>Limit<input id="f-span-limit" type="number" value="100" style="min-width:80px"></label>
+    <label>Traces<input id="f-span-limit" type="number" value="50" style="min-width:80px"></label>
     <button onclick="loadTraces()">Apply</button>
   </div>
   <div class="stats">
@@ -864,10 +864,11 @@ async function api(path) {
 
 // ── Traces ─────────────────────────────────────────────────────────────────
 async function loadTraces() {
-  const p = new URLSearchParams({ limit: document.getElementById('f-span-limit').value || 200 });
   const tid  = document.getElementById('f-trace-id').value.trim();
   const name = document.getElementById('f-span-name').value.trim();
-  if (tid)  p.set('trace_id', tid);
+  const p = new URLSearchParams();
+  if (tid)  { p.set('trace_id', tid); p.set('limit', 5000); }
+  else      { p.set('traces', document.getElementById('f-span-limit').value || 50); }
   if (name) p.set('name', name);
 
   const res = await api('/v1/query/spans?' + p);
@@ -883,8 +884,10 @@ async function loadTraces() {
   // Build one summary row per trace
   const traces = Object.entries(traceMap).map(([tid, spans]) => {
     const spanIds = new Set(spans.map(s => s.span_id));
-    // Root = span whose parent is not in this set (or no parent)
-    const root = spans.find(s => !s.parent_span_id || !spanIds.has(s.parent_span_id))
+    // Root: prefer SERVER (kind=2) span with no in-set parent; fallback to earliest span
+    const candidates = spans.filter(s => !s.parent_span_id || !spanIds.has(s.parent_span_id));
+    const root = candidates.find(s => s.kind === 2)
+                 || candidates[0]
                  || spans.reduce((a, b) => a.start_ns < b.start_ns ? a : b);
     const traceStart = Math.min(...spans.map(s => s.start_ns));
     const traceEnd   = Math.max(...spans.map(s => s.end_ns));
@@ -2148,13 +2151,20 @@ async function runRCA(withAI) {
   const url = `/v1/rca?entity=${encodeURIComponent(_rcaEntityID)}&window=${win}${tsParam}${withAI ? '&ai=true' : ''}`;
   const res = await api(url);
   if (!res) {
-    document.getElementById('rca-body').innerHTML = '<div class="empty">RCA request failed.</div>';
+    document.getElementById('rca-body').innerHTML = '<div class="empty">RCA request failed — check console for details.</div>';
     return;
   }
   const nCauses = res.candidate_causes?.length || 0;
   document.getElementById('rca-modal-meta').textContent =
     `${_rcaEntityID} · ${win/60}min window · ${nCauses} candidate${nCauses !== 1 ? 's' : ''} found`;
-  document.getElementById('rca-body').innerHTML = renderRCAResult(res);
+  try {
+    document.getElementById('rca-body').innerHTML = renderRCAResult(res);
+  } catch (err) {
+    document.getElementById('rca-body').innerHTML =
+      `<div class="empty">Render error: ${esc(String(err))}</div>`;
+    console.error('renderRCAResult failed:', err);
+    return;
+  }
   loadRCAEvidence(res); // async — populates correlated evidence section
 }
 

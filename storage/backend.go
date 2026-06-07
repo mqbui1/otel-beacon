@@ -111,6 +111,7 @@ type SpanQuery struct {
 	From          int64  // nanoseconds
 	To            int64
 	Limit         int
+	Traces        int    // if >0: return all spans for the N most-recent distinct traces
 	InternalLimit int    // bypass 1000-row cap for background workers
 }
 

@@ -48,6 +48,7 @@ func (s *queryServer) spans(w http.ResponseWriter, r *http.Request) {
 	q := storage.SpanQuery{
 		TraceID: r.URL.Query().Get("trace_id"),
 		Name:    r.URL.Query().Get("name"),
+		Traces:  parseInt(r.URL.Query().Get("traces")),
 		Service: r.URL.Query().Get("service"),
 		From:    parseInt64(r.URL.Query().Get("from")),
 		To:      parseInt64(r.URL.Query().Get("to")),
