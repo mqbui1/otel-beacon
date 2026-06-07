@@ -142,7 +142,7 @@ func (s *queryServer) rca(w http.ResponseWriter, r *http.Request) {
 			Confidence: conf,
 			Evidence: fmt.Sprintf("new error pattern: type=%s op=%s (seen %d times, first at %s)",
 				errType, sig.Operation, sig.OccurrenceCount,
-				time.Unix(sig.FirstSeenAt/1_000_000_000, 0).UTC().Format("15:04:05")),
+				time.Unix(sig.FirstSeenAt/1_000_000_000, 0).Local().Format("15:04:05")),
 		})
 	}
 
@@ -159,7 +159,7 @@ func (s *queryServer) rca(w http.ResponseWriter, r *http.Request) {
 			Confidence: conf,
 			Evidence: fmt.Sprintf("new call path rooted at %s: %d edge(s), seen %d time(s) (first at %s)",
 				fp.RootService, edgeCount(fp.EdgeList), fp.OccurrenceCount,
-				time.Unix(fp.FirstSeenAt/1_000_000_000, 0).UTC().Format("15:04:05")),
+				time.Unix(fp.FirstSeenAt/1_000_000_000, 0).Local().Format("15:04:05")),
 		})
 	}
 

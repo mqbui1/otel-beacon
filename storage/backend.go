@@ -44,7 +44,7 @@ type LogRow struct {
 
 type AnomalyRow struct {
 	EntityID     string  `json:"entity_id"`
-	SignalType   string  `json:"signal_type"`    // "metric"|"span_error_rate"|"span_latency"|"trace_drift"|"error_signature"
+	SignalType   string  `json:"signal_type"`    // "metric"|"span_error_rate"|"span_latency"|"trace_drift"|"error_signature"|"missing_service"
 	DetectorName string  `json:"detector_name"`
 	MetricName   string  `json:"metric_name"`
 	Value        float64 `json:"value"`

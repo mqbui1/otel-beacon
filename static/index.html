@@ -319,7 +319,7 @@
     .topo-node { cursor: pointer; }
     .topo-node circle { stroke-width: 1.5; transition: filter .2s; }
     .topo-node circle:hover { filter: brightness(1.3); stroke-width: 2.5; }
-    .topo-node text { font-size: 11px; fill: var(--text); text-anchor: middle; pointer-events: none; font-family: 'Segoe UI', system-ui, sans-serif; }
+    .topo-node text { font-size: 10px; fill: #e2e8f0; text-anchor: middle; pointer-events: none; font-family: 'Segoe UI', system-ui, sans-serif; font-weight: 500; }
     .topo-healthy  circle { fill: #0d2018; stroke: #4ecfb3; }
     .topo-errorrate circle { fill: #2a0d0d; stroke: #ef4444; }
     .topo-error    circle { fill: #2a150d; stroke: #f97316; }
@@ -335,12 +335,23 @@
     .topo-new       .topo-pulse { stroke: var(--purple); animation: tp 2.2s infinite; }
     @keyframes tp { 0%{opacity:.7;r:0} 100%{opacity:0;r:28px} }
     /* Edges */
-    .topo-edge     { fill:none; stroke:#3a4f60; stroke-width:1.5; stroke-opacity:.8; }
+    .topo-edge     { fill:none; stroke:#3a4f60; stroke-opacity:.8; }
     .topo-edge-err { fill:none; stroke:#ef4444; stroke-width:2;   stroke-opacity:.9; }
+    .topo-edge-hot { fill:none; stroke:#ef4444; stroke-opacity:.9; animation: ep 1s ease-in-out infinite; }
+    @keyframes ep { 0%,100%{stroke-opacity:.9} 50%{stroke-opacity:.25} }
+    /* K8s zone backgrounds */
+    .topo-zone { pointer-events:none; stroke-width:1; stroke-dasharray:5 3; }
+    .topo-zone-label { font-size:9px; fill:var(--muted); pointer-events:none; opacity:.5; font-family:'Segoe UI',system-ui,sans-serif; }
+    /* CPU arc indicator on nodes */
+    .topo-cpu-arc { pointer-events:none; stroke-linecap:round; }
     /* Legend */
     .topo-legend { display:flex; gap:12px; padding:8px 16px; background:var(--bg); border-top:1px solid var(--border); flex-wrap:wrap; border-radius:0 0 8px 8px; }
     .topo-legend-item { display:flex; align-items:center; gap:5px; font-size:10px; color:var(--muted); }
     .topo-legend-dot { width:9px; height:9px; border-radius:50%; border:1.5px solid; }
+    /* RCA embedded topology map */
+    .rca-map-node { cursor:pointer; }
+    .rca-map-node circle { transition: filter .15s; }
+    .rca-map-node:hover circle { filter: brightness(1.35); }
     /* Floating node drawer */
     #node-drawer {
       position:absolute; top:12px; left:12px; width:230px; z-index:20; display:none;
@@ -387,11 +398,11 @@
 <header>
   <div class="logo"><span>OTel</span><em>Beacon</em></div>
   <nav>
-    <button class="active" onclick="switchTab('traces',this)">Traces</button>
+    <button class="active" onclick="switchTab('services',this)">Services</button>
+    <button onclick="switchTab('anomalies',this)">Incidents</button>
+    <button onclick="switchTab('traces',this)">Traces</button>
     <button onclick="switchTab('metrics',this)">Metrics</button>
     <button onclick="switchTab('logs',this)">Logs</button>
-    <button onclick="switchTab('anomalies',this)">Anomalies</button>
-    <button onclick="switchTab('services',this)">Services</button>
   </nav>
   <div class="hdr-right">
     <span id="last-refresh">—</span>
@@ -625,6 +636,7 @@
           <option value="span_latency">Span Latency</option>
           <option value="trace_drift">Trace Drift</option>
           <option value="error_signature">Error Signature</option>
+          <option value="missing_service">Missing Service</option>
         </select>
       </label>
       <label>Severity
@@ -754,7 +766,7 @@
 
 <script>
 // ── Globals ────────────────────────────────────────────────────────────────
-let currentTab = 'traces';
+let currentTab = 'services';
 let metricsChart = null;
 let refreshTimer = null;
 const REFRESH_MS = 5000;
@@ -784,10 +796,11 @@ function loadCurrent() {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+const _localTZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
 function fmtTime(ns) {
   if (!ns) return '—';
   const d = new Date(ns / 1e6);
-  return d.toLocaleTimeString('en-US', { hour12: false }) + '.' +
+  return d.toLocaleTimeString('en-US', { hour12: true, timeZone: _localTZ }) + '.' +
          String(d.getMilliseconds()).padStart(3, '0');
 }
 
@@ -1479,14 +1492,14 @@ function switchSigTab(name, btn) {
 // ── Anomalies ──────────────────────────────────────────────────────────────
 const SIGNAL_LABELS = {
   metric: 'Metric', span_error_rate: 'Error Rate', span_latency: 'Latency',
-  trace_drift: 'Trace Drift', error_signature: 'Error Sig',
+  trace_drift: 'Trace Drift', error_signature: 'Error Sig', missing_service: 'Missing',
 };
 const SIGNAL_BADGE = {
   metric: 'b-info', span_error_rate: 'b-high', span_latency: 'b-med',
-  trace_drift: 'b-cyan', error_signature: 'b-warn',
+  trace_drift: 'b-cyan', error_signature: 'b-warn', missing_service: 'b-high',
 };
 const SIGNAL_PRIORITY = {
-  error_signature: 5, span_error_rate: 4, trace_drift: 3, span_latency: 2, metric: 1,
+  missing_service: 6, error_signature: 5, span_error_rate: 4, trace_drift: 3, span_latency: 2, metric: 1,
 };
 
 let _anomView = 'incidents';
@@ -1602,13 +1615,9 @@ async function loadAnomalies() {
 }
 
 function openRCAFromAnomaly(entityId, detectedAtSecs, bucketTs) {
-  // Anchor to the END of the 30-min incident bucket (bucket_ts + 1800) so the
-  // RCA window covers exactly [bucket_ts, bucket_ts+1800] — the full incident range.
-  // For raw anomaly rows (no bucketTs), anchor to the detection time.
-  window._rcaAnomalyTs = bucketTs ? (bucketTs + 1800) : detectedAtSecs;
-  window._rcaWindow = bucketTs ? 1800 : null;
-  openRCA(entityId);
-  runRCA();
+  const ts  = bucketTs ? (bucketTs + 1800) : detectedAtSecs;
+  const win = bucketTs ? 1800 : null;
+  openRCA(entityId, ts, win);
 }
 
 // ── Services / Entity Map ───────────────────────────────────────────────────
@@ -1624,9 +1633,21 @@ async function loadEnvironments() {
   const envs = res?.environments || [];
   const sel = document.getElementById('env-sel');
   if (!sel) return;
-  const cur = sel.value;
+  // On first load, default to the env with the most entities (most active)
+  if (!_currentEnv && envs.length) {
+    if (envs.length === 1) {
+      _currentEnv = envs[0];
+    } else {
+      // Pick whichever env has the most services
+      const counts = await Promise.all(envs.map(e =>
+        api(`/v1/entities?type=service&env=${encodeURIComponent(e)}`).then(r => ({ env: e, n: r?.count || 0 }))
+      ));
+      counts.sort((a, b) => b.n - a.n);
+      _currentEnv = counts[0].env;
+    }
+  }
   sel.innerHTML = '<option value="">All environments</option>' +
-    envs.map(e => `<option value="${esc(e)}"${e===cur?' selected':''}>${esc(e)}</option>`).join('');
+    envs.map(e => `<option value="${esc(e)}"${e===_currentEnv?' selected':''}>${esc(e)}</option>`).join('');
 }
 
 function switchEnv(env) {
@@ -1645,15 +1666,15 @@ async function loadServices() {
   _svcEntities = entRes?.data  || [];
   _svcEdges    = topoRes?.data || [];
 
-  // Build anomaly health map (highest-priority signal wins per entity)
+  // Build anomaly health map (highest-priority signal + CPU value per entity)
   const sigPrio = {error_signature:5, span_error_rate:4, trace_drift:3, span_latency:2, metric:1};
   _anomalyByEntity = {};
   (anomRes?.data || []).forEach(a => {
     if (!a.entity_id) return;
+    if (!_anomalyByEntity[a.entity_id]) _anomalyByEntity[a.entity_id] = { signal: null, cpu: 0 };
     const cur = _anomalyByEntity[a.entity_id];
-    if (!cur || (sigPrio[a.signal_type]||0) > (sigPrio[cur]||0)) {
-      _anomalyByEntity[a.entity_id] = a.signal_type;
-    }
+    if (!cur.signal || (sigPrio[a.signal_type]||0) > (sigPrio[cur.signal]||0)) cur.signal = a.signal_type;
+    if (a.metric_name === 'container.cpu.usage' && a.value > cur.cpu) cur.cpu = a.value;
   });
 
   // Stats
@@ -1667,7 +1688,7 @@ async function loadServices() {
 }
 
 function nodeHealthState(entityId) {
-  const sig = _anomalyByEntity[entityId];
+  const sig = _anomalyByEntity[entityId]?.signal;
   if (!sig) return 'topo-healthy';
   if (sig === 'span_error_rate') return 'topo-errorrate';
   if (sig === 'error_signature') return 'topo-error';
@@ -1686,15 +1707,20 @@ function renderServiceMap(entities, edges) {
   }
   hint.textContent = `${entities.length} services · ${edges.length} edges`;
 
+  // Parse k8s node groupings from entity attrs
+  const entityK8sNode = {};
+  entities.forEach(e => {
+    try { const a = JSON.parse(e.attrs||'{}'); if (a['k8s.node.name']) entityK8sNode[e.entity_id] = a['k8s.node.name']; } catch {}
+  });
+
   const W = container.clientWidth || 700, H = 460;
   const svg = d3.select(container).append('svg').attr('width', W).attr('height', H);
 
-  // Arrow markers
   const defs = svg.append('defs');
   [['green','#4ecfb3'],['orange','#f97316'],['red','#ef4444']].forEach(([id, color]) => {
     defs.append('marker').attr('id','arr-'+id)
       .attr('markerWidth',6).attr('markerHeight',6)
-      .attr('refX',5).attr('refY',3).attr('orient','auto')
+      .attr('refX',6).attr('refY',3).attr('orient','auto')
       .append('path').attr('d','M0,0 L0,6 L6,3 Z').attr('fill',color);
   });
 
@@ -1712,6 +1738,24 @@ function renderServiceMap(entities, edges) {
       call_count: e.call_count,
     }));
 
+  // K8s zone backgrounds — group nodes by node name
+  const zones = {};
+  nodes.forEach(n => { const z = entityK8sNode[n.id]; if (z) (zones[z] = zones[z]||[]).push(n); });
+  const zoneColorList = [
+    ['rgba(78,207,179,0.07)', 'rgba(78,207,179,0.3)'],
+    ['rgba(167,139,250,0.07)', 'rgba(167,139,250,0.3)'],
+    ['rgba(34,211,238,0.07)',  'rgba(34,211,238,0.3)'],
+  ];
+  const zoneG = g.insert('g', ':first-child');
+  const zonePaths = Object.entries(zones).map(([name, members], i) => {
+    const [fill, stroke] = zoneColorList[i % zoneColorList.length];
+    return {
+      members,
+      path:  zoneG.append('path').attr('class','topo-zone').style('fill',fill).style('stroke',stroke),
+      label: zoneG.append('text').attr('class','topo-zone-label').text(name),
+    };
+  });
+
   if (_d3Simulation) _d3Simulation.stop();
   _d3Simulation = d3.forceSimulation(nodes)
     .force('link',    d3.forceLink(links).id(d => d.id).distance(130))
@@ -1719,10 +1763,29 @@ function renderServiceMap(entities, edges) {
     .force('center',  d3.forceCenter(W / 2, H / 2))
     .force('collide', d3.forceCollide(46));
 
-  // Edges
+  // Tooltip div (shared)
+  let ttDiv = document.getElementById('topo-tt');
+  if (!ttDiv) {
+    ttDiv = document.createElement('div');
+    ttDiv.id = 'topo-tt';
+    ttDiv.style.cssText = 'position:fixed;background:#1a2332;border:1px solid rgba(255,255,255,.15);border-radius:6px;padding:6px 10px;font-size:11px;color:#dde4ec;pointer-events:none;opacity:0;transition:opacity .12s;z-index:9999;white-space:nowrap;font-family:"Segoe UI",system-ui,sans-serif';
+    document.body.appendChild(ttDiv);
+  }
+  function showTT(ev, html) { ttDiv.innerHTML = html; ttDiv.style.opacity = '1'; moveTT(ev); }
+  function moveTT(ev) { ttDiv.style.left = (ev.clientX+14)+'px'; ttDiv.style.top  = (ev.clientY-28)+'px'; }
+  function hideTT()   { ttDiv.style.opacity = '0'; }
+
+  // Edges — thickness by call volume, color+pulse by error rate; hidden until first tick
   const link = g.append('g').selectAll('line').data(links).enter().append('line')
-    .attr('class', d => d.err_rate > 0.05 ? 'topo-edge-err' : 'topo-edge')
-    .attr('marker-end', d => d.err_rate > 0.1 ? 'url(#arr-red)' : d.err_rate > 0.02 ? 'url(#arr-orange)' : 'url(#arr-green)');
+    .attr('class', d => d.err_rate > 0.1 ? 'topo-edge-hot' : d.err_rate > 0.05 ? 'topo-edge-err' : 'topo-edge')
+    .attr('stroke-width', d => Math.max(1.5, Math.min(5, d.call_count / 40)))
+    .attr('marker-end', d => d.err_rate > 0.1 ? 'url(#arr-red)' : d.err_rate > 0.02 ? 'url(#arr-orange)' : 'url(#arr-green)')
+    .attr('opacity', 0)  // hidden until simulation places nodes
+    .on('mouseover', (ev, d) => showTT(ev,
+      `<span style="color:#7a8fa3">${d.source.id || d.source}</span> → <span style="color:#7a8fa3">${d.target.id || d.target}</span><br>` +
+      `calls: <b>${d.call_count}</b> &nbsp; err: <b style="color:${d.err_rate>0.1?'#ef4444':d.err_rate>0.02?'#f97316':'#4ecfb3'}">${(d.err_rate*100).toFixed(1)}%</b>`))
+    .on('mousemove', moveTT)
+    .on('mouseout',  hideTT);
 
   // Nodes
   const node = g.append('g').selectAll('g').data(nodes).enter().append('g')
@@ -1731,23 +1794,83 @@ function renderServiceMap(entities, edges) {
       .on('start', (ev, d) => { if (!ev.active) _d3Simulation.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
       .on('drag',  (ev, d) => { d.fx=ev.x; d.fy=ev.y; })
       .on('end',   (ev, d) => { if (!ev.active) _d3Simulation.alphaTarget(0); d.fx=null; d.fy=null; }))
-    .on('click', (ev, d) => { ev.stopPropagation(); openNodeDrawer(d); });
+    .on('click', (ev, d) => { ev.stopPropagation(); openNodeDrawer(d); })
+    .on('mouseover', (ev, d) => { const a = _anomalyByEntity[d.id]; if (a?.cpu > 0) showTT(ev, `${d.id}<br>CPU: <b style="color:#f97316">${(a.cpu*100).toFixed(0)}%</b>${a.signal?` &nbsp; signal: <b>${a.signal}</b>`:''}`); })
+    .on('mousemove', moveTT)
+    .on('mouseout',  hideTT);
 
   node.append('circle').attr('r', 24);
   node.append('circle').attr('class', 'topo-pulse').attr('r', 0);
-  node.append('text').attr('dy', '4px').text(d => d.id.replace('spring-petclinic-','').slice(0,14));
 
+  // CPU arc indicator (drawn per-node when CPU data exists)
+  node.each(function(d) {
+    const cpu = _anomalyByEntity[d.id]?.cpu || 0;
+    if (cpu < 0.15) return;
+    const r = 27, span = cpu * Math.PI * 1.5;
+    const sa = -Math.PI/2 - span/2, ea = sa + span;
+    const x1 = (r*Math.cos(sa)).toFixed(2), y1 = (r*Math.sin(sa)).toFixed(2);
+    const x2 = (r*Math.cos(ea)).toFixed(2), y2 = (r*Math.sin(ea)).toFixed(2);
+    d3.select(this).append('path').attr('class','topo-cpu-arc')
+      .attr('d', `M${x1},${y1} A${r},${r} 0 ${span>Math.PI?1:0},1 ${x2},${y2}`)
+      .attr('fill','none')
+      .attr('stroke', cpu > 0.7 ? '#ef4444' : '#f97316')
+      .attr('stroke-width', 2.5).attr('opacity', 0.85);
+  });
+
+  // Service name label (below circle)
+  node.append('text')
+    .attr('dy', '40px')
+    .attr('font-size', '10px')
+    .attr('fill', '#e2e8f0')
+    .text(d => d.id.replace('spring-petclinic-','').slice(0, 16));
+  // Error rate badge inside circle when degraded
+  node.each(function(d) {
+    const sig = _anomalyByEntity[d.id]?.signal;
+    if (sig === 'span_error_rate' || sig === 'error_signature' || sig === 'self_error') {
+      // get anomaly value if available from stored data
+      const a = _anomalyByEntity[d.id];
+      d3.select(this).append('text')
+        .attr('dy', '4px')
+        .style('font-size', '9px').style('font-weight', '700').style('fill', '#ef4444')
+        .attr('text-anchor', 'middle')
+        .text('ERR');
+    }
+  });
+
+  let edgesShown = false;
   _d3Simulation.on('tick', () => {
+    if (!edgesShown) { link.attr('opacity', null); edgesShown = true; }
+    const R = 24; // node circle radius — shorten lines so arrowhead is visible
     link
-      .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
-      .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+      .attr('x1', d => { const dx=d.target.x-d.source.x, dy=d.target.y-d.source.y, l=Math.hypot(dx,dy)||1; return d.source.x+dx/l*R; })
+      .attr('y1', d => { const dx=d.target.x-d.source.x, dy=d.target.y-d.source.y, l=Math.hypot(dx,dy)||1; return d.source.y+dy/l*R; })
+      .attr('x2', d => { const dx=d.target.x-d.source.x, dy=d.target.y-d.source.y, l=Math.hypot(dx,dy)||1; return d.target.x-dx/l*R; })
+      .attr('y2', d => { const dx=d.target.x-d.source.x, dy=d.target.y-d.source.y, l=Math.hypot(dx,dy)||1; return d.target.y-dy/l*R; });
     node.attr('transform', d => `translate(${d.x},${d.y})`);
+
+    // Update k8s zone hull shapes on each tick
+    zonePaths.forEach(({members, path, label}) => {
+      if (members.length === 1) {
+        const n = members[0];
+        path.attr('d', `M${(n.x-62).toFixed()},${(n.y-50).toFixed()} h124 a10,10 0 0 1 10,10 v80 a10,10 0 0 1 -10,10 h-124 a10,10 0 0 1 -10,-10 v-80 a10,10 0 0 1 10,-10 Z`);
+        label.attr('x', n.x - 54).attr('y', n.y - 37);
+      } else {
+        const pts = members.map(n => [n.x, n.y]);
+        const hull = d3.polygonHull(pts);
+        if (hull) {
+          const cx = d3.mean(pts, p => p[0]), cy = d3.mean(pts, p => p[1]);
+          const exp = hull.map(([x,y]) => { const dx=x-cx,dy=y-cy,l=Math.sqrt(dx*dx+dy*dy)||1; return [x+dx/l*58, y+dy/l*58]; });
+          path.attr('d', 'M'+exp.map(p=>p.join(',')).join('L')+'Z');
+          label.attr('x', Math.min(...exp.map(p=>p[0]))+8).attr('y', Math.min(...exp.map(p=>p[1]))+14);
+        }
+      }
+    });
   });
 
   svg.on('click', () => closeNodeDrawer());
 }
 
-function openNodeDrawer(d) {
+async function openNodeDrawer(d) {
   window._ndService = d.id;
   const state  = nodeHealthState(d.id);
   const stateLabels = {
@@ -1766,8 +1889,36 @@ function openNodeDrawer(d) {
     <div class="nd-row"><span class="nd-lbl">Last seen</span><span class="nd-val">${d.last_seen_ns ? fmtTime(d.last_seen_ns) : '—'}</span></div>
     <div class="nd-row"><span class="nd-lbl">Inbound</span><span class="nd-val">${_svcEdges.filter(e=>e.target_service===d.id).length}</span></div>
     <div class="nd-row"><span class="nd-lbl">Outbound</span><span class="nd-val">${_svcEdges.filter(e=>e.source_service===d.id).length}</span></div>
-    <div class="nd-row"><span class="nd-lbl">Signal</span><span class="nd-val" style="color:${color}">${esc(_anomalyByEntity[d.id]||'none')}</span></div>`;
+    <div class="nd-row"><span class="nd-lbl">Signal</span><span class="nd-val" style="color:${color}">${esc(_anomalyByEntity[d.id]?.signal||'none')}</span></div>
+    <div class="nd-row nd-metrics-placeholder"><span class="nd-lbl" style="color:var(--muted);font-style:italic">fetching metrics…</span></div>`;
   document.getElementById('node-drawer').style.display = 'block';
+
+  // Fetch last 5 min of infra metrics for this service
+  const fromNs = Math.floor((Date.now() - 5 * 60 * 1000) * 1e6);
+  const mRes = await api(`/v1/query/metrics?service=${encodeURIComponent(d.id)}&prefix=container,http&limit=200&from=${fromNs}`);
+
+  let cpu = 0, mem = 0, latencyP95 = 0;
+  const latencies = [];
+  (mRes?.data || []).forEach(m => {
+    if (m.name === 'container.cpu.usage'  && m.value > cpu) cpu = m.value;
+    if (m.name === 'container.memory.rss' && m.value > mem) mem = m.value;
+    if (m.name === 'http.server.duration') latencies.push(m.value);
+  });
+  if (latencies.length) {
+    latencies.sort((a,b) => a-b);
+    latencyP95 = latencies[Math.floor(latencies.length * 0.95)] || latencies[latencies.length-1];
+  }
+
+  const cpuColor    = cpu > 0.7 ? 'var(--red)' : cpu > 0.4 ? '#f97316' : '#4ecfb3';
+  const memMB       = (mem / 1_048_576).toFixed(0);
+  const metricsHTML = `
+    ${cpu > 0 ? `<div class="nd-row"><span class="nd-lbl">CPU</span><span class="nd-val" style="color:${cpuColor}">${(cpu*100).toFixed(1)}%</span></div>` : ''}
+    ${mem > 0 ? `<div class="nd-row"><span class="nd-lbl">Memory</span><span class="nd-val">${memMB} MB</span></div>` : ''}
+    ${latencyP95 > 0 ? `<div class="nd-row"><span class="nd-lbl">P95 latency</span><span class="nd-val" style="color:var(--cyan)">${latencyP95.toFixed(0)} ms</span></div>` : ''}
+    ${cpu === 0 && mem === 0 ? `<div class="nd-row"><span class="nd-lbl" style="color:var(--muted);font-style:italic">no metrics in last 5m</span></div>` : ''}`;
+
+  const placeholder = document.querySelector('.nd-metrics-placeholder');
+  if (placeholder) placeholder.outerHTML = metricsHTML;
 }
 
 function closeNodeDrawer() {
@@ -1907,18 +2058,23 @@ document.getElementById('auto-refresh').addEventListener('change', scheduleRefre
 
 setInterval(() => {
   document.getElementById('last-refresh').textContent =
-    new Date().toLocaleTimeString('en-US', { hour12: false });
+    new Date().toLocaleTimeString('en-US', { hour12: true });
 }, 1000);
 
 // ── RCA ────────────────────────────────────────────────────────────────────
-let _rcaEntityID = null;
+let _rcaEntityID  = null;
+let _rcaLastWin   = null; // persisted after runRCA so AI Summary reuses same window
+let _rcaLastTs    = null; // persisted after runRCA so AI Summary reuses same timestamp
 
-function openRCA(entityId) {
+function openRCA(entityId, tsOverride, winOverride) {
   _rcaEntityID = entityId;
+  window._rcaAnomalyTs = tsOverride ?? null;
+  window._rcaWindow    = winOverride ?? null;
   document.getElementById('rca-modal-title').textContent = 'RCA — ' + entityId;
-  document.getElementById('rca-modal-meta').textContent = 'Click Analyze to start';
-  document.getElementById('rca-body').innerHTML = '<div class="empty">Click Analyze to start RCA.</div>';
+  document.getElementById('rca-modal-meta').textContent = 'Analyzing…';
+  document.getElementById('rca-body').innerHTML = '<div class="empty" style="opacity:.6">Loading…</div>';
   document.getElementById('rca-modal').classList.add('open');
+  runRCA();
 }
 
 function closeRCA() {
@@ -1927,14 +2083,16 @@ function closeRCA() {
 
 async function runRCA(withAI) {
   if (!_rcaEntityID) return;
-  // Use window override from incident (30 min) or the UI selector
   const win = window._rcaWindow || document.getElementById('rca-window-sel').value;
-  window._rcaWindow = null; // consume once
+  window._rcaWindow = null;
+  const ts = window._rcaAnomalyTs || null;
+  window._rcaAnomalyTs = null;
+  // Persist so AI Summary can reuse the exact same query params
+  _rcaLastWin = win;
+  _rcaLastTs  = ts;
   document.getElementById('rca-body').innerHTML = '<div class="empty">Analyzing…</div>';
-  // If triggered from an anomaly/incident, anchor the window to that timestamp
-  const tsParam = window._rcaAnomalyTs ? `&ts=${window._rcaAnomalyTs}` : '';
+  const tsParam = ts ? `&ts=${ts}` : '';
   const url = `/v1/rca?entity=${encodeURIComponent(_rcaEntityID)}&window=${win}${tsParam}${withAI ? '&ai=true' : ''}`;
-  window._rcaAnomalyTs = null; // consume once
   const res = await api(url);
   if (!res) {
     document.getElementById('rca-body').innerHTML = '<div class="empty">RCA request failed.</div>';
@@ -1948,21 +2106,109 @@ async function runRCA(withAI) {
 
 async function runRCAWithAI() {
   if (!_rcaEntityID) return;
-  const win = document.getElementById('rca-window-sel').value;
+  // Reuse the exact same window+ts that was used for the last runRCA call
+  const win = _rcaLastWin || document.getElementById('rca-window-sel').value;
   // If RCA panel is empty, run full analysis with AI
   const narrativeEl = document.getElementById('rca-narrative');
   if (!narrativeEl) {
     return runRCA(true);
   }
-  // Panel already rendered — just fetch the narrative
+  // Panel already rendered — just fetch the narrative using same window+ts as the original RCA
   narrativeEl.innerHTML = '<div class="empty" style="padding:12px">Calling Bedrock…</div>';
-  const url = `/v1/rca?entity=${encodeURIComponent(_rcaEntityID)}&window=${win}&ai=true`;
+  const tsParam = _rcaLastTs ? `&ts=${_rcaLastTs}` : '';
+  const url = `/v1/rca?entity=${encodeURIComponent(_rcaEntityID)}&window=${win}${tsParam}&ai=true`;
   const res = await api(url);
   if (res?.narrative) {
     narrativeEl.innerHTML = `<div style="line-height:1.7;font-size:13px;color:var(--fg)">${esc(res.narrative)}</div>`;
   } else {
     narrativeEl.innerHTML = '<div class="empty" style="padding:12px">AI summary unavailable.</div>';
   }
+}
+
+function renderRCAMap(r) {
+  const W = 500, PAD = 72;
+  const upstream   = r.upstream   || [];
+  const downstream = r.downstream || [];
+  const coLocated  = r.co_located || [];
+  const allNeighbors = [...upstream, ...downstream, ...coLocated];
+  if (!allNeighbors.length && !r.health?.has_data) return '';
+
+  // Layout: upstream left, focal center, downstream right, co-located in separate zone below
+  const maxSide = Math.max(upstream.length, downstream.length, 1);
+  const mainH = Math.max(200, maxSide * 80 + 60);
+  const coH = coLocated.length ? 80 : 0;
+  const totalH = mainH + coH;
+  const CX = W / 2, CY = mainH / 2;
+
+  const pos = {};
+  pos[r.entity] = { x: CX, y: CY };
+  upstream.forEach((n, i)   => { pos[n.entity_id] = { x: PAD,     y: mainH*0.15 + i * (mainH*0.7 / Math.max(upstream.length,1)) }; });
+  downstream.forEach((n, i) => { pos[n.entity_id] = { x: W - PAD, y: mainH*0.15 + i * (mainH*0.7 / Math.max(downstream.length,1)) }; });
+  coLocated.forEach((n, i)  => { pos[n.entity_id] = { x: CX + (i - (coLocated.length-1)/2) * 120, y: mainH + 42 }; });
+
+  function ec(rate) { return rate > 0.2 ? '#ef4444' : rate > 0.05 ? '#f97316' : '#4ecfb3'; }
+  function fc(rate) { return rate > 0.2 ? '#2a0d0d' : rate > 0.05 ? '#2a150d' : '#0d2018'; }
+
+  // Edges
+  let edgesSVG = allNeighbors.map(n => {
+    const fp = pos[r.entity], np = pos[n.entity_id];
+    if (!fp || !np) return '';
+    if (n.relation === 'co_located') {
+      return `<line x1="${fp.x}" y1="${fp.y}" x2="${np.x}" y2="${np.y}" stroke="#7a8fa3" stroke-width="1" stroke-dasharray="4 3" opacity="0.35"/>`;
+    }
+    const isUp = n.relation === 'upstream';
+    const [x1,y1,x2,y2] = isUp ? [np.x,np.y,fp.x,fp.y] : [fp.x,fp.y,np.x,np.y];
+    const er = n.health?.error_rate || 0;
+    const color = ec(er);
+    const sw = Math.max(1.5, Math.min(4, (n.health?.span_total||1) / 30));
+    return `<line x1="${x1.toFixed()}" y1="${y1.toFixed()}" x2="${x2.toFixed()}" y2="${y2.toFixed()}" stroke="${color}" stroke-width="${sw}" opacity="0.75" marker-end="url(#rca-arr-${er>0.1?'red':er>0.02?'orange':'green'})"/>`;
+  }).join('');
+
+  // Co-located separator line
+  const coSep = coLocated.length
+    ? `<line x1="20" y1="${mainH}" x2="${W-20}" y2="${mainH}" stroke="rgba(255,255,255,.08)" stroke-width="1" stroke-dasharray="4 3"/>`
+    : '';
+
+  // Nodes
+  let nodesSVG = Object.entries(pos).map(([id, p]) => {
+    const isFocal = id === r.entity;
+    const nb = allNeighbors.find(n => n.entity_id === id);
+    const health = isFocal ? r.health : nb?.health;
+    const er = health?.error_rate || 0;
+    const stroke = ec(er), fill = fc(er);
+    const nr = isFocal ? 26 : 19;
+    const label = id.replace('spring-petclinic-','').slice(0, 16);
+    const erText = health?.has_data !== false ? `${(er*100).toFixed(0)}%` : '?';
+    const isColoc = nb?.relation === 'co_located';
+    // label above for co-located so it doesn't overlap with the separator line
+    const labelY = isColoc ? p.y + nr + 13 : p.y + nr + 13;
+    const sameNodeY = isColoc ? p.y - nr - 6 : 0;
+    return `<g class="rca-map-node" onclick="event.stopPropagation();selectService('${esc(id)}')">
+      ${isFocal ? `<circle cx="${p.x}" cy="${p.y}" r="${nr+8}" fill="none" stroke="${stroke}" stroke-width="1" opacity="0.2"/>` : ''}
+      <circle cx="${p.x}" cy="${p.y}" r="${nr}" fill="${fill}" stroke="${stroke}" stroke-width="${isFocal?2.5:1.5}" ${isColoc?'stroke-dasharray="4 3"':''}/>
+      <text x="${p.x}" y="${p.y+4}" text-anchor="middle" font-size="${isFocal?11:10}" fill="${stroke}" font-weight="700" font-family="'Segoe UI',system-ui,sans-serif">${erText}</text>
+      <text x="${p.x}" y="${labelY}" text-anchor="middle" font-size="9" fill="#dde4ec" font-family="'Segoe UI',system-ui,sans-serif">${esc(label)}</text>
+      ${isColoc ? `<text x="${p.x}" y="${sameNodeY}" text-anchor="middle" font-size="8" fill="#7a8fa3" font-family="'Segoe UI',system-ui,sans-serif">same node</text>` : ''}
+    </g>`;
+  }).join('');
+
+  const upLabel   = upstream.length   ? `<text x="8" y="11" text-anchor="start"  font-size="8" fill="#7a8fa3" font-family="'Segoe UI',system-ui,sans-serif">UPSTREAM</text>` : '';
+  const downLabel = downstream.length ? `<text x="${W-8}" y="11" text-anchor="end" font-size="8" fill="#7a8fa3" font-family="'Segoe UI',system-ui,sans-serif">DOWNSTREAM</text>` : '';
+  const coLabel   = coLocated.length  ? `<text x="${CX}" y="${mainH+11}" text-anchor="middle" font-size="8" fill="#7a8fa3" font-family="'Segoe UI',system-ui,sans-serif">CO-LOCATED (SAME NODE)</text>` : '';
+
+  return `<div style="background:rgba(0,0,0,.15);border:1px solid var(--border);border-radius:8px;overflow:hidden;margin-bottom:14px">
+    <div style="padding:5px 12px;font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border)">
+      Topology — color = error rate
+    </div>
+    <svg viewBox="0 0 ${W} ${totalH+12}" style="width:100%;height:${totalH+16}px;display:block">
+      <defs>
+        ${[['red','#ef4444'],['orange','#f97316'],['green','#4ecfb3']].map(([id,c])=>
+          `<marker id="rca-arr-${id}" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 Z" fill="${c}"/></marker>`
+        ).join('')}
+      </defs>
+      ${coSep}${edgesSVG}${nodesSVG}${upLabel}${downLabel}${coLabel}
+    </svg>
+  </div>`;
 }
 
 function renderRCAResult(r) {
@@ -1975,30 +2221,30 @@ function renderRCAResult(r) {
   function healthCard(label, health) {
     const c = errColor(health.error_rate || 0);
     return `
-    <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px">
-      <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">${label}</div>
-      ${!health.has_data && !health.span_total ? '<div style="color:var(--muted);font-size:12px">No data in window</div>' : `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+      <div style="font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">${label}</div>
+      ${!health.has_data && !health.span_total ? '<div style="color:var(--muted);font-size:11px">No data</div>' : `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
         <div>
-          <div style="font-size:10px;color:var(--muted)">Error Rate</div>
-          <div style="font-size:22px;font-weight:700;color:${c}">${((health.error_rate||0)*100).toFixed(1)}%</div>
+          <div style="font-size:9px;color:var(--muted)">Error Rate</div>
+          <div style="font-size:18px;font-weight:700;color:${c}">${((health.error_rate||0)*100).toFixed(1)}%</div>
         </div>
         <div>
-          <div style="font-size:10px;color:var(--muted)">P95 Latency</div>
-          <div style="font-size:22px;font-weight:700;color:var(--cyan)">${(health.p95_ms||0).toFixed(0)}ms</div>
+          <div style="font-size:9px;color:var(--muted)">P95</div>
+          <div style="font-size:18px;font-weight:700;color:var(--cyan)">${(health.p95_ms||0).toFixed(0)}ms</div>
         </div>
         <div>
-          <div style="font-size:10px;color:var(--muted)">Spans</div>
-          <div style="font-size:13px;font-weight:600">${health.span_total||0} <span style="color:var(--red)">(${health.span_errors||0} err)</span></div>
+          <div style="font-size:9px;color:var(--muted)">Spans</div>
+          <div style="font-size:12px;font-weight:600">${health.span_total||0} <span style="color:var(--red)">(${health.span_errors||0} err)</span></div>
         </div>
         <div>
-          <div style="font-size:10px;color:var(--muted)">Log Errors</div>
-          <div style="font-size:13px;font-weight:600;color:${(health.log_errors||0)>0?'var(--red)':'var(--fg)'}">${health.log_errors||0}</div>
+          <div style="font-size:9px;color:var(--muted)">Log Err</div>
+          <div style="font-size:12px;font-weight:600;color:${(health.log_errors||0)>0?'var(--red)':'var(--fg)'}">${health.log_errors||0}</div>
         </div>
         ${health.cpu_usage > 0 ? `
-        <div>
-          <div style="font-size:10px;color:var(--muted)">CPU Usage</div>
-          <div style="font-size:13px;font-weight:600">${((health.cpu_usage||0)*100).toFixed(1)}%</div>
+        <div style="grid-column:span 2">
+          <div style="font-size:9px;color:var(--muted)">CPU</div>
+          <div style="font-size:12px;font-weight:600">${((health.cpu_usage||0)*100).toFixed(1)}%</div>
         </div>` : ''}
       </div>`}
     </div>`;
@@ -2125,12 +2371,13 @@ function renderRCAResult(r) {
     </div>` : '';
 
   return `
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
-    ${healthCard('Incident Window', h)}
-    ${healthCard('Baseline (prev window)', b)}
-  </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+  <div style="display:grid;grid-template-columns:44% 56%;gap:16px;align-items:start">
+    <!-- Left: health cards + neighbor tables -->
     <div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+        ${healthCard('Incident Window', h)}
+        ${healthCard('Baseline (prev window)', b)}
+      </div>
       ${neighborTable('Downstream (called by focal)', r.downstream)}
       ${neighborTable('Upstream (callers of focal)', r.upstream)}
       ${neighborTable('Co-located (same node)', r.co_located)}
@@ -2138,12 +2385,14 @@ function renderRCAResult(r) {
         ? '<div style="color:var(--muted);font-size:12px;padding:8px 0">No entity relationships found — topology may not be populated yet.</div>'
         : ''}
     </div>
+    <!-- Right: topology map + candidates + AI -->
     <div>
+      ${renderRCAMap(r)}
       <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Candidate Causes</div>
       ${causeCards || '<div style="color:var(--muted);font-size:12px;padding:8px 0">No strong candidates found — service may be the origin, or insufficient data in the window.</div>'}
       ${traceFPTable}
       ${errSigTable}
-      <div style="margin-top:16px">
+      <div style="margin-top:14px">
         <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">AI Summary</div>
         <div id="rca-narrative" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;color:var(--muted)">
           ${r.narrative ? `<div style="line-height:1.7;font-size:13px;color:var(--fg)">${esc(r.narrative)}</div>` : 'Click "AI Summary" to generate an explanation using AWS Bedrock.'}

@@ -81,6 +81,12 @@ type Storage struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// Missing-service detection: track last time each root service was seen
+	// in a fingerprinted trace. Updated by fingerprintWorker, read by missingServiceWorker.
+	missingMu       sync.Mutex
+	lastSeenRootSvc map[string]time.Time // rootSvc -> last observed time
+	missingEmitted  map[string]bool      // rootSvc -> true if alert already fired this absence
+
 	// Prometheus metrics
 	received  *prometheus.CounterVec
 	dropped   *prometheus.CounterVec
@@ -97,19 +103,21 @@ type metricBatch struct {
 
 func New(backend Backend, opts ...Option) *Storage {
 	s := &Storage{
-		backend:       backend,
-		algo:          AlgoMAD,
-		ewmaAlpha:     0.3,
-		anomalyThresh: 3.5,
-		anomalyWindow: 100,
-		batchSize:     defaultBatchSize,
-		flushInterval: defaultFlushInterval,
-		chanSize:      defaultChannelSize,
-		retentionDays: 30,
-		maxRetries:    defaultMaxRetries,
-		onAnomaly:     func(AnomalyRow) {},
-		onError:       func(err error) { fmt.Println("storage error:", err) },
-		promReg:       prometheus.DefaultRegisterer,
+		backend:         backend,
+		algo:            AlgoMAD,
+		ewmaAlpha:       0.3,
+		anomalyThresh:   3.5,
+		anomalyWindow:   100,
+		batchSize:       defaultBatchSize,
+		flushInterval:   defaultFlushInterval,
+		chanSize:        defaultChannelSize,
+		retentionDays:   30,
+		maxRetries:      defaultMaxRetries,
+		onAnomaly:       func(AnomalyRow) {},
+		onError:         func(err error) { fmt.Println("storage error:", err) },
+		promReg:         prometheus.DefaultRegisterer,
+		lastSeenRootSvc: make(map[string]time.Time),
+		missingEmitted:  make(map[string]bool),
 	}
 	for _, o := range opts {
 		o(s)
@@ -141,11 +149,12 @@ func (s *Storage) Init(ctx context.Context) error {
 		s.wg.Add(1)
 		go s.retentionWorker()
 	}
-	s.wg.Add(4)
+	s.wg.Add(5)
 	go s.topologyWorker()
 	go s.fingerprintWorker()
 	go s.errorSignatureWorker()
 	go s.spanRateWorker()
+	go s.missingServiceWorker()
 	return nil
 }
 
@@ -450,7 +459,11 @@ func (s *Storage) retentionWorker() {
 
 func (s *Storage) topologyWorker() {
 	defer s.wg.Done()
-	ticker := time.NewTicker(2 * time.Minute)
+	// Run immediately on startup so topology is available without waiting
+	if err := s.backend.RefreshTopology(s.ctx); err != nil {
+		s.onError(fmt.Errorf("refresh topology: %w", err))
+	}
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {

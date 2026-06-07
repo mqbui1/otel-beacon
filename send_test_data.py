@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
-"""Send synthetic OTLP traces, metrics, and logs to the otel-beacon backend."""
-import json, random, struct, time, urllib.request
+"""Send synthetic OTLP traces, metrics, and logs to the otel-beacon backend.
+
+Usage:
+  python3 send_test_data.py              # one-shot: 130 rounds, fast
+  python3 send_test_data.py --continuous # steady stream, 1 round every 5s forever
+                                         # spike pattern repeats every 5 minutes
+"""
+import json, random, sys, time, urllib.request
 
 OTLP_ENDPOINT = "http://localhost:4318"
 QUERY_ENDPOINT = "http://localhost:8080"
 SERVICES = ["frontend", "payment-service", "cart-service", "inventory-service", "shipping-service"]
 ROUNDS = 130  # need 100+ points per (entity,metric) to trigger MAD detector
+CONTINUOUS = "--continuous" in sys.argv
+
+# In continuous mode: spike every 5 min for 1 min, error every 5 min for 30s
+SPIKE_PERIOD  = 300   # seconds between spikes
+SPIKE_WINDOW  = 60    # seconds the spike lasts
+ERROR_WINDOW  = 30    # seconds errors fire (tail of spike)
 
 def uid(n=16): return ''.join(f'{random.randint(0,255):02x}' for _ in range(n))
 def ns(): return int(time.time() * 1e9)
@@ -31,14 +43,17 @@ CALL_GRAPH = {
     "shipping-service":   [],
 }
 
+ENVIRONMENT = "otel-beacon-demo"
+
 def make_resource_attrs(svc):
     node = "node-1" if svc in ("frontend", "payment-service") else "node-2"
     return [
-        {"key": "service.name",        "value": {"stringValue": svc}},
-        {"key": "k8s.pod.name",        "value": {"stringValue": f"{svc}-pod-abc"}},
-        {"key": "k8s.deployment.name", "value": {"stringValue": svc}},
-        {"key": "k8s.namespace.name",  "value": {"stringValue": "default"}},
-        {"key": "k8s.node.name",       "value": {"stringValue": node}},
+        {"key": "service.name",            "value": {"stringValue": svc}},
+        {"key": "deployment.environment",  "value": {"stringValue": ENVIRONMENT}},
+        {"key": "k8s.pod.name",            "value": {"stringValue": f"{svc}-pod-abc"}},
+        {"key": "k8s.deployment.name",     "value": {"stringValue": svc}},
+        {"key": "k8s.namespace.name",      "value": {"stringValue": "default"}},
+        {"key": "k8s.node.name",           "value": {"stringValue": node}},
     ]
 
 def send_traces(svc, error=False):
@@ -121,39 +136,69 @@ def send_logs(svc, level="INFO"):
     post("/v1/logs", body)
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-print(f"Sending {ROUNDS} rounds × {len(SERVICES)} services …")
-for i in range(ROUNDS):
+def send_round(spike, error):
     for svc in SERVICES:
-        spike = (svc == "payment-service") and (i > 100)
-        err   = (svc == "payment-service") and (i > 110)
-        send_traces(svc, error=err)
-        send_metrics(svc, cpu_spike=spike, mem_spike=spike)
-    if i % 20 == 0:
-        print(f"  round {i}/{ROUNDS}")
-    time.sleep(0.05)
+        svc_spike = spike and (svc == "payment-service")
+        svc_err   = error and (svc == "payment-service")
+        send_traces(svc, error=svc_err)
+        send_metrics(svc, cpu_spike=svc_spike, mem_spike=svc_spike)
 
-# Send some error logs
-for svc in SERVICES:
-    for _ in range(5):
-        send_logs(svc, "ERROR")
-    for _ in range(3):
-        send_logs(svc, "WARN")
-    send_logs(svc, "INFO")
+def send_logs_burst():
+    for svc in SERVICES:
+        for _ in range(5): send_logs(svc, "ERROR")
+        for _ in range(3): send_logs(svc, "WARN")
+        send_logs(svc, "INFO")
 
-print("Done. Waiting 15s for background workers to process anomalies…")
-time.sleep(15)
-
-# Report
-def get(path):
+if CONTINUOUS:
+    print("Continuous mode — 1 round/5s, spike every 5 min. Ctrl-C to stop.")
+    round_num = 0
     try:
-        r = urllib.request.urlopen(f"{QUERY_ENDPOINT}{path}", timeout=5)
-        return json.loads(r.read())
-    except:
-        return {}
+        while True:
+            t = time.time()
+            phase = t % SPIKE_PERIOD          # seconds into current spike cycle
+            spike = phase < SPIKE_WINDOW
+            error = phase < ERROR_WINDOW
+            send_round(spike, error)
+            # Send INFO logs from all services every round; ERROR during spike
+            for svc in SERVICES:
+                if error and svc == "payment-service":
+                    send_logs(svc, "ERROR")
+                elif spike and svc in ("payment-service", "cart-service"):
+                    send_logs(svc, "WARN")
+                else:
+                    send_logs(svc, "INFO")
+            state = "SPIKE+ERR" if error else ("SPIKE" if spike else "normal")
+            if round_num % 12 == 0:
+                print(f"  round {round_num} [{state}]  next spike in {SPIKE_PERIOD - phase:.0f}s")
+            round_num += 1
+            time.sleep(5)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+else:
+    print(f"Sending {ROUNDS} rounds × {len(SERVICES)} services …")
+    for i in range(ROUNDS):
+        spike = (i > 100)
+        error = (i > 110)
+        send_round(spike, error)
+        if i % 20 == 0:
+            print(f"  round {i}/{ROUNDS}")
+        time.sleep(0.05)
 
-spans    = get("/v1/query/spans?limit=1").get("count", 0)
-metrics  = get("/v1/query/metrics?limit=1").get("count", 0)
-logs     = get("/v1/query/logs?limit=1").get("count", 0)
-anomalies= get("/v1/query/anomalies?limit=1").get("count", 0)
-incidents= get("/v1/incidents").get("count", 0)
-print(f"spans={spans} | metrics={metrics} | logs={logs} | anomalies={anomalies} | incidents={incidents}")
+    send_logs_burst()
+
+    print("Done. Waiting 15s for background workers to process anomalies…")
+    time.sleep(15)
+
+    def get(path):
+        try:
+            r = urllib.request.urlopen(f"{QUERY_ENDPOINT}{path}", timeout=5)
+            return json.loads(r.read())
+        except:
+            return {}
+
+    spans     = get("/v1/query/spans?limit=1").get("count", 0)
+    metrics   = get("/v1/query/metrics?limit=1").get("count", 0)
+    logs      = get("/v1/query/logs?limit=1").get("count", 0)
+    anomalies = get("/v1/query/anomalies?limit=1").get("count", 0)
+    incidents = get("/v1/incidents").get("count", 0)
+    print(f"spans={spans} | metrics={metrics} | logs={logs} | anomalies={anomalies} | incidents={incidents}")

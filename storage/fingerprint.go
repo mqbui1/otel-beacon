@@ -12,12 +12,35 @@ import (
 
 const (
 	fpWindowDur      = 5 * time.Minute
-	fpBaselineMinOcc = 3             // occurrences before promoting to baseline
+	fpBaselineMinOcc = 3               // occurrences before promoting to baseline
 	fpBaselineMinAge = 5 * time.Minute // must be this old before promoting
-	errSpikeMultiple = 3.0           // rate > N× baseline = spike anomaly
+	errSpikeMultiple = 3.0             // rate > N× baseline = spike anomaly
 	errBaselineMinOcc = 2
 	errBaselineMinAge = 30 * time.Minute
+
+	missingCheckInterval   = 5 * time.Minute
+	missingAlertThreshold  = 2 * missingCheckInterval // silence this long before alerting
 )
+
+// noisePatterns are root operation substrings to exclude from fingerprinting.
+// These are health checks, readiness probes, and infrastructure heartbeats that
+// generate spurious "new fingerprint" alerts and clutter the baseline.
+var noisePatterns = []string{
+	"/health", "/healthz", "/readyz", "/livez", "/ready", "/live",
+	"/actuator", "/ping", "/status", "/_health", "/api/health",
+	"/metrics", "/favicon",
+	"/eureka/", "/v1/agent/", "/v1/health/", "/v1/catalog/",
+}
+
+func isNoiseOperation(op string) bool {
+	lower := strings.ToLower(op)
+	for _, p := range noisePatterns {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
 
 // ── Trace fingerprint worker ─────────────────────────────────────────────────
 
@@ -77,6 +100,10 @@ func (s *Storage) runTraceFingerprint() error {
 		}
 	}
 
+	// Bootstrap mode: if no baseline exists yet, silently promote everything
+	// to baseline on first pass rather than flooding with false-positive alerts.
+	bootstrapMode := len(baseline) == 0
+
 	var anomalies []AnomalyRow
 	seen := make(map[string]bool)
 	ts := now.Unix()
@@ -85,11 +112,24 @@ func (s *Storage) runTraceFingerprint() error {
 		if len(traceSpans) < 2 {
 			continue
 		}
-		hash, edges, rootSvc := buildTraceFP(traceSpans)
+		hash, edges, rootSvc, rootOp := buildTraceFP(traceSpans)
 		if hash == "" || len(edges) == 0 || seen[hash] {
 			continue
 		}
+		// Filter out health checks, readiness probes, and infra heartbeats
+		if isNoiseOperation(rootOp) {
+			continue
+		}
 		seen[hash] = true
+
+		// Always update last-seen for the root service so the missing-service
+		// checker knows traffic is still flowing, even for baseline traces.
+		if rootSvc != "" {
+			s.missingMu.Lock()
+			s.lastSeenRootSvc[rootSvc] = time.Now()
+			delete(s.missingEmitted, rootSvc) // reset alert gate when traffic resumes
+			s.missingMu.Unlock()
+		}
 
 		edgesJSON, _ := json.Marshal(edges)
 
@@ -115,6 +155,14 @@ func (s *Storage) runTraceFingerprint() error {
 			cand.LastSeenAt = ts
 		}
 
+		// In bootstrap mode (empty baseline on first run), silently promote
+		// every unique fingerprint to baseline without alerting.
+		if bootstrapMode {
+			cand.IsBaseline = true
+			_ = s.backend.UpsertTraceFingerprint(ctx, cand)
+			continue
+		}
+
 		age := time.Duration(ts-cand.FirstSeenAt) * time.Second
 		if cand.OccurrenceCount >= fpBaselineMinOcc && age >= fpBaselineMinAge {
 			cand.IsBaseline = true
@@ -123,7 +171,7 @@ func (s *Storage) runTraceFingerprint() error {
 		}
 		_ = s.backend.UpsertTraceFingerprint(ctx, cand)
 
-		// Only emit anomaly on very first detection
+		// Only emit anomaly on very first detection (not on subsequent windows)
 		if !isCandidate {
 			anomalies = append(anomalies, AnomalyRow{
 				EntityID:     rootSvc,
@@ -195,6 +243,9 @@ func (s *Storage) runErrorSignature() error {
 		}
 	}
 
+	// Bootstrap mode: silently promote all new error signatures on first pass.
+	errBootstrapMode := len(baseline) == 0
+
 	// Count occurrences per signature in this window
 	type windowEntry struct {
 		sig   ErrorSignatureRow
@@ -249,6 +300,14 @@ func (s *Storage) runErrorSignature() error {
 		} else {
 			cand.OccurrenceCount += we.count
 			cand.LastSeenAt = ts
+		}
+
+		// In bootstrap mode, silently promote without alerting.
+		if errBootstrapMode {
+			cand.IsBaseline = true
+			cand.BaselineRate = float64(we.count)
+			_ = s.backend.UpsertErrorSignature(ctx, cand)
+			continue
 		}
 
 		age := time.Duration(ts-cand.FirstSeenAt) * time.Second
@@ -391,6 +450,87 @@ func (s *Storage) runSpanRateDetection() error {
 	return nil
 }
 
+// ── Missing service worker ────────────────────────────────────────────────────
+
+func (s *Storage) missingServiceWorker() {
+	defer s.wg.Done()
+	// Wait longer than the fingerprint worker so baseline is populated first.
+	select {
+	case <-time.After(4 * time.Minute):
+	case <-s.ctx.Done():
+		return
+	}
+	ticker := time.NewTicker(missingCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := s.checkMissingServices(); err != nil {
+				s.onError(fmt.Errorf("missing service check: %w", err))
+			}
+		case <-s.ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *Storage) checkMissingServices() error {
+	ctx := s.ctx
+
+	// Collect all root services that have been promoted to baseline.
+	existing, err := s.backend.QueryTraceFingerprints(ctx, "")
+	if err != nil {
+		return err
+	}
+	baselineSvcs := make(map[string]bool)
+	for _, fp := range existing {
+		if fp.IsBaseline && fp.RootService != "" {
+			baselineSvcs[fp.RootService] = true
+		}
+	}
+	if len(baselineSvcs) == 0 {
+		return nil
+	}
+
+	now := time.Now()
+	var anomalies []AnomalyRow
+	ts := now.Unix()
+
+	s.missingMu.Lock()
+	defer s.missingMu.Unlock()
+
+	for svc := range baselineSvcs {
+		lastSeen, ok := s.lastSeenRootSvc[svc]
+		if !ok {
+			// Never seen since this process started — skip to avoid false alerts on restart.
+			continue
+		}
+		if now.Sub(lastSeen) < missingAlertThreshold {
+			continue
+		}
+		if s.missingEmitted[svc] {
+			continue // already alerted this absence period
+		}
+		anomalies = append(anomalies, AnomalyRow{
+			EntityID:     svc,
+			SignalType:   "missing_service",
+			DetectorName: "Missing Service",
+			MetricName:   "trace.missing_service",
+			Value:        1,
+			Score:        1,
+			Severity:     "critical",
+			Description:  fmt.Sprintf("%s has gone silent — no traces seen for %.0f minutes", svc, now.Sub(lastSeen).Minutes()),
+			DetectedAt:   ts,
+		})
+		s.missingEmitted[svc] = true
+	}
+
+	if len(anomalies) > 0 {
+		return s.backend.FlushAnomalies(ctx, anomalies)
+	}
+	return nil
+}
+
 // ── Fingerprint builders ──────────────────────────────────────────────────────
 
 type fpSpan struct {
@@ -400,7 +540,10 @@ type fpSpan struct {
 	OpName       string
 }
 
-func buildTraceFP(spans []SpanRow) (hash string, edges []string, rootSvc string) {
+// buildTraceFP computes a structural fingerprint for a set of spans belonging
+// to one trace. Returns the hash, cross-service edges, root service name, and
+// root operation name. Returns empty hash if no cross-service edges are found.
+func buildTraceFP(spans []SpanRow) (hash string, edges []string, rootSvc, rootOp string) {
 	byID := make(map[string]fpSpan, len(spans))
 	for _, s := range spans {
 		var res map[string]any
@@ -415,6 +558,7 @@ func buildTraceFP(spans []SpanRow) (hash string, edges []string, rootSvc string)
 		isRoot := s.ParentSpanID == "" || s.ParentSpanID == "0000000000000000"
 		if isRoot && rootSvc == "" {
 			rootSvc = s.ServiceName
+			rootOp = s.OpName
 		}
 		parent, ok := byID[s.ParentSpanID]
 		if !ok || parent.ServiceName == "" || parent.ServiceName == s.ServiceName {
@@ -423,7 +567,7 @@ func buildTraceFP(spans []SpanRow) (hash string, edges []string, rootSvc string)
 		edges = append(edges, parent.ServiceName+":"+parent.OpName+"→"+s.ServiceName+":"+s.OpName)
 	}
 	if len(edges) == 0 {
-		return "", nil, rootSvc
+		return "", nil, rootSvc, rootOp
 	}
 	sort.Strings(edges)
 	h := md5.Sum([]byte(strings.Join(edges, "|")))
