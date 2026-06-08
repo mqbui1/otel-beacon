@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -94,7 +95,8 @@ func (s *queryServer) rca(w http.ResponseWriter, r *http.Request) {
 	}
 
 	withAI := r.URL.Query().Get("ai") == "true"
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	defer cancel()
 	windowNs := int64(windowSecs) * 1_000_000_000
 	fromNs := incidentTs - windowNs
 	toNs := incidentTs
@@ -198,12 +200,27 @@ func (s *queryServer) rca(w http.ResponseWriter, r *http.Request) {
 func (s *queryServer) entityHealth(ctx context.Context, entityID string, k8sAttrs map[string]string, fromNs, toNs int64) EntityHealth {
 	h := EntityHealth{EntityID: entityID}
 
-	spans, _ := s.store.QuerySpans(ctx, storage.SpanQuery{
-		Service: entityID,
-		From:    fromNs,
-		To:      toNs,
-		Limit:   2000,
-	})
+	var (
+		spans   []storage.SpanRow
+		logs    []storage.LogRow
+		metrics []storage.MetricRow
+		wg      sync.WaitGroup
+	)
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		spans, _ = s.store.QuerySpans(ctx, storage.SpanQuery{Service: entityID, From: fromNs, To: toNs, Limit: 500})
+	}()
+	go func() {
+		defer wg.Done()
+		logs, _ = s.store.QueryLogs(ctx, storage.LogQuery{Service: entityID, K8sAttrs: k8sAttrs, From: fromNs, To: toNs, Limit: 200})
+	}()
+	go func() {
+		defer wg.Done()
+		metrics, _ = s.store.QueryMetrics(ctx, storage.MetricQuery{Service: entityID, K8sAttrs: k8sAttrs, From: fromNs, To: toNs, Limit: 100})
+	}()
+	wg.Wait()
+
 	if len(spans) > 0 {
 		h.HasData = true
 		h.SpanTotal = len(spans)
@@ -220,14 +237,6 @@ func (s *queryServer) entityHealth(ctx context.Context, entityID string, k8sAttr
 		sort.Float64s(durations)
 		h.P95Ms = p95(durations)
 	}
-
-	logs, _ := s.store.QueryLogs(ctx, storage.LogQuery{
-		Service:  entityID,
-		K8sAttrs: k8sAttrs,
-		From:     fromNs,
-		To:       toNs,
-		Limit:    500,
-	})
 	for _, l := range logs {
 		switch l.Severity {
 		case "ERROR", "FATAL", "CRITICAL":
@@ -236,14 +245,6 @@ func (s *queryServer) entityHealth(ctx context.Context, entityID string, k8sAttr
 			h.LogWarns++
 		}
 	}
-
-	metrics, _ := s.store.QueryMetrics(ctx, storage.MetricQuery{
-		Service:  entityID,
-		K8sAttrs: k8sAttrs,
-		From:     fromNs,
-		To:       toNs,
-		Limit:    200,
-	})
 	for _, m := range metrics {
 		switch m.Name {
 		case "container.cpu.usage":
@@ -268,25 +269,24 @@ func (s *queryServer) neighborHealthList(
 	attrsMap map[string]map[string]string,
 	fromNs, toNs, windowNs int64,
 ) []NeighborHealth {
-	out := make([]NeighborHealth, 0, len(ids))
-	for _, id := range ids {
-		k8s := filterAttrs(attrsMap[id])
-		h := s.entityHealth(ctx, id, k8s, fromNs, toNs)
-		pre := s.entityHealth(ctx, id, k8s, fromNs-windowNs, fromNs)
-
-		// Negative lag: neighbor was already degraded in the pre-window
-		lag := 0.0
-		if pre.HasData && pre.ErrorRate > 0.1 {
-			lag = -float64(windowNs) / 1_000_000_000
-		}
-
-		out = append(out, NeighborHealth{
-			EntityID:   id,
-			Relation:   relation,
-			Health:     h,
-			LagSeconds: lag,
-		})
+	out := make([]NeighborHealth, len(ids))
+	var wg sync.WaitGroup
+	for i, id := range ids {
+		i, id := i, id
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			k8s := filterAttrs(attrsMap[id])
+			h := s.entityHealth(ctx, id, k8s, fromNs, toNs)
+			pre := s.entityHealth(ctx, id, k8s, fromNs-windowNs, fromNs)
+			lag := 0.0
+			if pre.HasData && pre.ErrorRate > 0.1 {
+				lag = -float64(windowNs) / 1_000_000_000
+			}
+			out[i] = NeighborHealth{EntityID: id, Relation: relation, Health: h, LagSeconds: lag}
+		}()
 	}
+	wg.Wait()
 	return out
 }
 

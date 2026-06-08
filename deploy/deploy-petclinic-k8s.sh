@@ -269,11 +269,104 @@ spec:
 EOF
 
 # ---------------------------------------------------------------------------
-# Step 7: PetClinic services
+# Step 7: MySQL (Secret + StatefulSet + Service)
+#   customers-service, vets-service, visits-service use the mysql Spring profile.
+#   SPRING_SQL_INIT_MODE=always auto-creates the schema on first boot.
+# ---------------------------------------------------------------------------
+kubectl apply -f - <<'MYSQL_EOF'
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql-secret
+  namespace: petclinic
+type: Opaque
+stringData:
+  mysql-root-password: "petclinic"
+  mysql-password: "petclinic"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+  namespace: petclinic
+spec:
+  serviceName: mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: mysql-root-password
+            - name: MYSQL_DATABASE
+              value: petclinic
+            - name: MYSQL_USER
+              value: petclinic
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: mysql-password
+          resources:
+            requests:
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          readinessProbe:
+            exec:
+              command: ["mysqladmin", "ping", "-h", "localhost", "-upetclinic", "-ppetclinic"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
+  volumeClaimTemplates:
+    - metadata:
+        name: mysql-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: petclinic
+spec:
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+      targetPort: 3306
+MYSQL_EOF
+
+echo "--- Waiting for MySQL to be ready ---"
+kubectl rollout status statefulset/mysql -n "$NAMESPACE" --timeout=120s
+
+# ---------------------------------------------------------------------------
+# Step 8: PetClinic services
 #   Key requirements:
 #   - hostPath /otel for Java agent (must be pre-populated on nodes)
 #   - Downward API vars BEFORE OTEL_RESOURCE_ATTRIBUTES (k8s $(VAR) substitution ordering)
 #   - nc -z health checks (not wget to /actuator/health — Spring Cloud Config intercepts it)
+#   - customers/vets/visits use docker,mysql profile with wait-mysql initContainer
 # ---------------------------------------------------------------------------
 kubectl apply -f - <<'PETCLINIC_EOF'
 ---
@@ -401,12 +494,23 @@ spec:
         - name: wait-discovery
           image: busybox:1.28
           command: ['sh', '-c', 'until nc -z discovery-server 8761; do sleep 2; done']
+        - name: wait-mysql
+          image: busybox:1.28
+          command: ['sh', '-c', 'until nc -z mysql 3306; do sleep 3; done']
       containers:
         - name: customers-service
           image: springcommunity/spring-petclinic-customers-service:latest
           ports: [{containerPort: 8081}]
           env:
-            - {name: SPRING_PROFILES_ACTIVE, value: docker}
+            - {name: SPRING_PROFILES_ACTIVE, value: "docker,mysql"}
+            - {name: SPRING_DATASOURCE_URL, value: "jdbc:mysql://mysql:3306/petclinic?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC"}
+            - {name: SPRING_DATASOURCE_USERNAME, value: petclinic}
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: mysql-password
+            - {name: SPRING_SQL_INIT_MODE, value: always}
             - {name: JAVA_TOOL_OPTIONS, value: "-javaagent:/otel/opentelemetry-javaagent.jar"}
             - {name: OTEL_SERVICE_NAME, value: customers-service}
             - {name: OTEL_EXPORTER_OTLP_PROTOCOL, value: http/protobuf}
@@ -456,12 +560,23 @@ spec:
         - name: wait-discovery
           image: busybox:1.28
           command: ['sh', '-c', 'until nc -z discovery-server 8761; do sleep 2; done']
+        - name: wait-mysql
+          image: busybox:1.28
+          command: ['sh', '-c', 'until nc -z mysql 3306; do sleep 3; done']
       containers:
         - name: vets-service
           image: springcommunity/spring-petclinic-vets-service:latest
           ports: [{containerPort: 8083}]
           env:
-            - {name: SPRING_PROFILES_ACTIVE, value: docker}
+            - {name: SPRING_PROFILES_ACTIVE, value: "docker,mysql"}
+            - {name: SPRING_DATASOURCE_URL, value: "jdbc:mysql://mysql:3306/petclinic?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC"}
+            - {name: SPRING_DATASOURCE_USERNAME, value: petclinic}
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: mysql-password
+            - {name: SPRING_SQL_INIT_MODE, value: always}
             - {name: JAVA_TOOL_OPTIONS, value: "-javaagent:/otel/opentelemetry-javaagent.jar"}
             - {name: OTEL_SERVICE_NAME, value: vets-service}
             - {name: OTEL_EXPORTER_OTLP_PROTOCOL, value: http/protobuf}
@@ -511,12 +626,23 @@ spec:
         - name: wait-discovery
           image: busybox:1.28
           command: ['sh', '-c', 'until nc -z discovery-server 8761; do sleep 2; done']
+        - name: wait-mysql
+          image: busybox:1.28
+          command: ['sh', '-c', 'until nc -z mysql 3306; do sleep 3; done']
       containers:
         - name: visits-service
           image: springcommunity/spring-petclinic-visits-service:latest
           ports: [{containerPort: 8082}]
           env:
-            - {name: SPRING_PROFILES_ACTIVE, value: docker}
+            - {name: SPRING_PROFILES_ACTIVE, value: "docker,mysql"}
+            - {name: SPRING_DATASOURCE_URL, value: "jdbc:mysql://mysql:3306/petclinic?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC"}
+            - {name: SPRING_DATASOURCE_USERNAME, value: petclinic}
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: mysql-password
+            - {name: SPRING_SQL_INIT_MODE, value: always}
             - {name: JAVA_TOOL_OPTIONS, value: "-javaagent:/otel/opentelemetry-javaagent.jar"}
             - {name: OTEL_SERVICE_NAME, value: visits-service}
             - {name: OTEL_EXPORTER_OTLP_PROTOCOL, value: http/protobuf}
@@ -670,5 +796,6 @@ echo ""
 echo "==> All done. Pod status:"
 kubectl get pods -n "$NAMESPACE"
 echo ""
-echo "Access PetClinic via NodePort 30080 on any cluster node."
-echo "OTel data flows to: $OTEL_BACKEND"
+echo "Access PetClinic UI:  http://<EC2-PUBLIC-IP>:8090  (k3d maps NodePort 30080 -> host 8090)"
+echo "Access otel-beacon:   http://<EC2-PUBLIC-IP>:8080"
+echo "OTel ingest endpoint: $OTEL_BACKEND"

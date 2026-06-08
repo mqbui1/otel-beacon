@@ -18,8 +18,8 @@ func NewSQLiteBackend(dsn string) (*SQLiteBackend, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sqlite open: %w", err)
 	}
-	db.SetMaxOpenConns(1) // SQLite: single writer
-	db.SetMaxIdleConns(1)
+	db.SetMaxOpenConns(8) // WAL mode: multiple concurrent readers, serialised writes
+	db.SetMaxIdleConns(8)
 	return &SQLiteBackend{db: db}, nil
 }
 
@@ -27,9 +27,14 @@ func (b *SQLiteBackend) Init(ctx context.Context) error {
 	if _, err := b.db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
 		return err
 	}
+	if _, err := b.db.ExecContext(ctx, "PRAGMA busy_timeout=5000"); err != nil {
+		return err
+	}
 	if _, err := b.db.ExecContext(ctx, sqliteSchema); err != nil {
 		return err
 	}
+	// Remove stale inferred topology entries for embedded databases.
+	b.db.ExecContext(ctx, `DELETE FROM service_topology WHERE target_service IN ('hsqldb','h2','derby','sqlite') OR target_service LIKE '%/%'`)
 	b.migrateSchema(ctx)
 	return nil
 }
@@ -626,7 +631,8 @@ func (b *SQLiteBackend) UpsertEntities(ctx context.Context, entities []EntityRow
 }
 
 func (b *SQLiteBackend) RefreshTopology(ctx context.Context) error {
-	_, err := b.db.ExecContext(ctx, `
+	// Real service-to-service edges derived from parent→child span relationships.
+	if _, err := b.db.ExecContext(ctx, `
 		INSERT OR REPLACE INTO service_topology
 			(source_service, target_service, call_count, error_count, avg_duration_ms, updated_at)
 		SELECT
@@ -643,7 +649,46 @@ func (b *SQLiteBackend) RefreshTopology(ctx context.Context) error {
 		  AND json_extract(child.resource_attrs,  '$."service.name"') IS NOT NULL
 		  AND json_extract(parent.resource_attrs, '$."service.name"')
 		   != json_extract(child.resource_attrs,  '$."service.name"')
-		GROUP BY source_service, target_service`)
+		GROUP BY source_service, target_service`); err != nil {
+		return err
+	}
+
+	// Inferred external service edges: CLIENT spans with db.system or peer.service that
+	// have no server-side counterpart (e.g. MySQL, Redis, external APIs).
+	// Only inserted when the target is not already a known instrumented service.
+	_, err := b.db.ExecContext(ctx, `
+		INSERT OR REPLACE INTO service_topology
+			(source_service, target_service, call_count, error_count, avg_duration_ms, updated_at)
+		SELECT src, tgt, COUNT(*), SUM(is_err), AVG(dur), unixepoch()
+		FROM (
+			SELECT
+				json_extract(s.resource_attrs, '$."service.name"') AS src,
+				COALESCE(
+					json_extract(s.span_attrs, '$."peer.service"'),
+					json_extract(s.span_attrs, '$."db.system"')
+				) AS tgt,
+				CASE WHEN s.status_code = 2 THEN 1 ELSE 0 END AS is_err,
+				s.duration_ms AS dur
+			FROM spans s
+			WHERE s.start_ns > (unixepoch() - 3600) * 1000000000
+			  AND json_extract(s.resource_attrs, '$."service.name"') IS NOT NULL
+			  AND (
+				  (
+					  json_extract(s.span_attrs, '$."db.system"') IS NOT NULL
+					  -- Skip embedded/in-process databases — they are not separate services
+					  AND json_extract(s.span_attrs, '$."db.system"') NOT IN ('hsqldb','h2','derby','sqlite','other_sql')
+				  )
+				  OR json_extract(s.span_attrs, '$."peer.service"') IS NOT NULL
+			  )
+		)
+		WHERE tgt IS NOT NULL AND tgt != src
+		  AND tgt NOT IN (
+			  SELECT DISTINCT json_extract(resource_attrs, '$."service.name"')
+			  FROM spans
+			  WHERE start_ns > (unixepoch() - 3600) * 1000000000
+				AND json_extract(resource_attrs, '$."service.name"') IS NOT NULL
+		  )
+		GROUP BY src, tgt`)
 	return err
 }
 

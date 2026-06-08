@@ -234,7 +234,7 @@ func (s *Storage) InsertTraces(_ context.Context, td ptrace.Traces) error {
 					StatusCode:   int(sp.Status().Code()),
 					StatusMsg:    sp.Status().Message(),
 					ResourceAttrs: resJSON,
-					SpanAttrs:    marshalAttrs(sp.Attributes()),
+					SpanAttrs:    marshalSpanAttrs(sp),
 				}
 				s.received.WithLabelValues("traces").Inc()
 				select {
@@ -653,6 +653,31 @@ func marshalAttrs(attrs pcommon.Map) string {
 		m[k] = v.AsRaw()
 		return true
 	})
+	b, _ := json.Marshal(m)
+	return string(b)
+}
+
+// marshalSpanAttrs serialises span attributes and merges in any "exception"
+// event attributes (exception.type, exception.message, exception.stacktrace)
+// so the full stack trace is visible in the stored span_attrs JSON.
+func marshalSpanAttrs(sp ptrace.Span) string {
+	m := make(map[string]any, sp.Attributes().Len())
+	sp.Attributes().Range(func(k string, v pcommon.Value) bool {
+		m[k] = v.AsRaw()
+		return true
+	})
+	for i := 0; i < sp.Events().Len(); i++ {
+		ev := sp.Events().At(i)
+		if ev.Name() != "exception" {
+			continue
+		}
+		ev.Attributes().Range(func(k string, v pcommon.Value) bool {
+			if _, exists := m[k]; !exists {
+				m[k] = v.AsRaw()
+			}
+			return true
+		})
+	}
 	b, _ := json.Marshal(m)
 	return string(b)
 }

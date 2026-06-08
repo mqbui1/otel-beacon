@@ -301,6 +301,7 @@
     .wf-attr-table td { padding: 4px 6px; vertical-align: top; }
     .wf-attr-key { color: var(--cyan); font-family: monospace; white-space: nowrap; width: 1%; padding-right: 14px !important; }
     .wf-attr-val { color: var(--text); font-family: monospace; word-break: break-all; }
+    .wf-attr-val-stack { color: #f87171; font-family: monospace; font-size: 11px; white-space: pre-wrap; word-break: break-all; background: rgba(0,0,0,.4); border-radius: 4px; padding: 7px 9px; max-height: 240px; overflow-y: auto; display: block; margin-top: 3px; border-left: 2px solid #ef4444; }
     .wf-meta-grid {
       display: grid; grid-template-columns: auto 1fr; gap: 4px 14px;
       font-size: 12px; margin-bottom: 12px;
@@ -1095,15 +1096,29 @@ function toggleSpanDetail(spanId) {
   try { resAttrs  = JSON.parse(s.resource_attrs || '{}'); } catch {}
 
   const renderAttrs = (obj) => {
-    const entries = Object.entries(obj);
+    let entries = Object.entries(obj);
     if (!entries.length) return '<div style="color:var(--muted);font-size:12px">—</div>';
+    // Sort: exception.* keys first (type → message → stacktrace), then alphabetical
+    const excOrder = {'exception.type':0,'exception.message':1,'exception.stacktrace':2};
+    entries.sort(([a],[b]) => {
+      const ai = excOrder[a] ?? 100, bi = excOrder[b] ?? 100;
+      if (ai !== bi) return ai - bi;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
     return `<table class="wf-attr-table">${
-      entries.map(([k, v]) => `
-        <tr>
+      entries.map(([k, v]) => {
+        const str = typeof v === 'object' ? JSON.stringify(v) : String(v);
+        if (k === 'exception.stacktrace') {
+          return `<tr>
+            <td class="wf-attr-key" style="vertical-align:top;padding-top:6px">${esc(k)}</td>
+            <td><pre class="wf-attr-val-stack">${esc(str)}</pre></td>
+          </tr>`;
+        }
+        return `<tr>
           <td class="wf-attr-key">${esc(k)}</td>
-          <td class="wf-attr-val">${esc(typeof v === 'object' ? JSON.stringify(v) : String(v))}</td>
-        </tr>
-      `).join('')
+          <td class="wf-attr-val">${esc(str)}</td>
+        </tr>`;
+      }).join('')
     }</table>`;
   };
 
@@ -1160,6 +1175,13 @@ async function loadCorrelation(traceId, traceStart, traceEnd, serviceName) {
   document.getElementById('corr-log-count').textContent = logs.length;
   document.getElementById('corr-log-err').style.display = errLogs.length ? 'block' : 'none';
 
+  // Sort: ERROR/FATAL first, then by timestamp desc
+  const sevOrder = s => ({'FATAL':0,'ERROR':1}[s?.toUpperCase()] ?? 2);
+  const sortedLogs = [...logs].sort((a, b) => {
+    const sd = sevOrder(a.severity) - sevOrder(b.severity);
+    return sd !== 0 ? sd : Number(BigInt(b.timestamp_ns) - BigInt(a.timestamp_ns));
+  });
+
   const logPane = document.getElementById('corr-logs-pane');
   if (!logs.length) {
     logPane.innerHTML = `<div class="corr-empty">No logs found for entity <strong>${esc(serviceName)}</strong> within ±5 min of this trace.</div>`;
@@ -1167,13 +1189,14 @@ async function loadCorrelation(traceId, traceStart, traceEnd, serviceName) {
     logPane.innerHTML = `
       <table style="width:100%;border-collapse:collapse">
         <tbody>
-          ${logs.map(l => `
-            <tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+          ${sortedLogs.map(l => {
+            const isErr = ['ERROR','FATAL'].includes((l.severity||'').toUpperCase());
+            return `<tr style="border-bottom:1px solid rgba(255,255,255,.04)${isErr ? ';background:rgba(239,68,68,.06)' : ''}">
               <td style="padding:6px 14px;font-family:monospace;font-size:11px;color:var(--muted);white-space:nowrap;width:1%">${fmtTime(l.timestamp_ns)}</td>
               <td style="padding:6px 14px;width:1%">${sevBadge(l.severity)}</td>
               <td style="padding:6px 14px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0" title="${esc(l.body)}">${esc(l.body)||'—'}</td>
-            </tr>
-          `).join('')}
+            </tr>`;
+          }).join('')}
         </tbody>
       </table>`;
   }
@@ -1523,24 +1546,44 @@ async function loadIncidents() {
     incidents = incidents.filter(i => envIds.has(i.entity_id));
   }
 
-  const critCount     = incidents.filter(i => i.severity === 'critical').length;
-  const entitySet     = new Set(incidents.map(i => i.entity_id));
-  const errSigCount   = incidents.filter(i => (i.signals?.error_signature || 0) > 0).length;
-  const traceDriftCnt = incidents.filter(i => (i.signals?.trace_drift || 0) > 0).length;
+  // Collapse to one row per entity: keep highest-priority bucket, merge signals, count windows
+  const entityMap = new Map();
+  for (const inc of incidents) {
+    const existing = entityMap.get(inc.entity_id);
+    if (!existing || inc.priority > existing.priority ||
+        (inc.priority === existing.priority && inc.latest_ts > existing.latest_ts)) {
+      entityMap.set(inc.entity_id, { ...inc, windowCount: 1 });
+    } else {
+      existing.windowCount++;
+      // Merge signals from all buckets
+      for (const [sig, cnt] of Object.entries(inc.signals || {})) {
+        existing.signals[sig] = (existing.signals[sig] || 0) + cnt;
+      }
+      if (inc.latest_ts > existing.latest_ts) existing.latest_ts = inc.latest_ts;
+    }
+  }
+  const collapsed = [...entityMap.values()].sort((a, b) =>
+    b.priority !== a.priority ? b.priority - a.priority : b.latest_ts - a.latest_ts
+  );
 
-  document.getElementById('s-inc-count').textContent    = incidents.length;
+  const critCount     = collapsed.filter(i => i.severity === 'critical').length;
+  const entitySet     = new Set(collapsed.map(i => i.entity_id));
+  const errSigCount   = collapsed.filter(i => (i.signals?.error_signature || 0) > 0).length;
+  const traceDriftCnt = collapsed.filter(i => (i.signals?.trace_drift || 0) > 0).length;
+
+  document.getElementById('s-inc-count').textContent    = collapsed.length;
   document.getElementById('s-inc-crit').textContent     = critCount;
   document.getElementById('s-inc-entities').textContent = entitySet.size;
   document.getElementById('s-inc-errsig').textContent   = errSigCount;
   document.getElementById('s-inc-trace').textContent    = traceDriftCnt;
 
   const tbody = document.getElementById('incidents-body');
-  if (!incidents.length) {
+  if (!collapsed.length) {
     tbody.innerHTML = '<tr><td colspan="4" class="empty" style="padding:16px;text-align:center">No incidents yet — detectors warm up after ~8 min of data.</td></tr>';
     return;
   }
 
-  tbody.innerHTML = incidents.map(inc => {
+  tbody.innerHTML = collapsed.map(inc => {
     const sevCls = inc.severity === 'critical' ? 'b-high' : 'b-med';
     const sigBadges = Object.entries(inc.signals || {})
       .sort(([a],[b]) => (SIGNAL_PRIORITY[b]||0) - (SIGNAL_PRIORITY[a]||0))
@@ -1549,11 +1592,13 @@ async function loadIncidents() {
         const lbl = SIGNAL_LABELS[sig] || sig;
         return `<span class="badge ${cls}" style="margin-right:2px;font-size:9px">${lbl}${cnt>1?` ×${cnt}`:''}</span>`;
       }).join('');
+    const winLabel = inc.windowCount > 1
+      ? `<span style="font-size:9px;color:var(--muted)">${inc.windowCount} windows</span>` : '';
     return `<tr style="border-bottom:1px solid rgba(255,255,255,.04)">
       <td style="padding:6px 8px;white-space:nowrap"><span class="badge ${sevCls}" style="font-size:10px">${inc.severity}</span></td>
       <td style="padding:6px 4px;max-width:110px;overflow:hidden">
         <div style="font-family:monospace;font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(inc.entity_id)}">${esc(inc.entity_id)}</div>
-        <div style="font-size:10px;color:var(--muted)">${fmtAge(inc.latest_ts)}</div>
+        <div style="font-size:10px;color:var(--muted)">${fmtAge(inc.latest_ts)} ${winLabel}</div>
       </td>
       <td style="padding:6px 4px">${sigBadges}</td>
       <td style="padding:6px 8px;white-space:nowrap"><button class="btn-rca-sm" onclick="openRCAFromAnomaly('${esc(inc.entity_id)}',${inc.latest_ts},${inc.bucket_ts})">RCA</button></td>
@@ -1717,9 +1762,12 @@ function renderServiceMap(entities, edges) {
   // Compute topology fingerprint to detect structural changes
   const nodeIds = entities.map(e => e.entity_id).sort();
   const nodeSet = new Set(nodeIds);
-  const filteredEdges = edges.filter(e => nodeSet.has(e.source_service) && nodeSet.has(e.target_service));
+  // Include inferred external service nodes (DB, etc.) from edge targets not in entities
+  const inferredIds = [...new Set(edges.map(e => e.target_service).filter(t => !nodeSet.has(t)))].sort();
+  const allNodeSet = new Set([...nodeSet, ...inferredIds]);
+  const filteredEdges = edges.filter(e => nodeSet.has(e.source_service) && allNodeSet.has(e.target_service));
   const edgeKeys = filteredEdges.map(e => `${e.source_service}→${e.target_service}`).sort();
-  const fingerprint = nodeIds.join(',') + '|' + edgeKeys.join(',');
+  const fingerprint = nodeIds.join(',') + '|' + inferredIds.join(',') + '|' + edgeKeys.join(',');
 
   // Same topology → fast visual-only update, no DOM rebuild or re-simulation
   if (fingerprint === _topoFingerprint && container.querySelector('svg')) {
@@ -1765,11 +1813,18 @@ function renderServiceMap(entities, edges) {
   const g = svg.append('g');
   svg.call(d3.zoom().scaleExtent([0.3,3]).on('zoom', e => g.attr('transform', e.transform)));
 
-  const nodes = entities.map(e => {
-    const saved = _topoNodePositions[e.entity_id];
-    return {id: e.entity_id, last_seen_ns: e.last_seen_ns,
-      ...(saved ? {x: saved.x, y: saved.y} : {})};
-  });
+  const nodes = [
+    ...entities.map(e => {
+      const saved = _topoNodePositions[e.entity_id];
+      return {id: e.entity_id, last_seen_ns: e.last_seen_ns, inferred: false,
+        ...(saved ? {x: saved.x, y: saved.y} : {})};
+    }),
+    ...inferredIds.map(id => {
+      const saved = _topoNodePositions[id];
+      return {id, last_seen_ns: 0, inferred: true,
+        ...(saved ? {x: saved.x, y: saved.y} : {})};
+    }),
+  ];
   const links = filteredEdges.map(e => ({
     source:     e.source_service,
     target:     e.target_service,
@@ -1828,18 +1883,35 @@ function renderServiceMap(entities, edges) {
 
   // Nodes
   const node = g.append('g').selectAll('g').data(nodes).enter().append('g')
-    .attr('class', d => 'topo-node ' + nodeHealthState(d.id))
+    .attr('class', d => d.inferred ? 'topo-node-inferred' : 'topo-node ' + nodeHealthState(d.id))
     .call(d3.drag()
       .on('start', (ev, d) => { if (!ev.active) _d3Simulation.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
       .on('drag',  (ev, d) => { d.fx=ev.x; d.fy=ev.y; })
       .on('end',   (ev, d) => { if (!ev.active) _d3Simulation.alphaTarget(0); d.fx=null; d.fy=null; }))
-    .on('click', (ev, d) => { ev.stopPropagation(); openNodeDrawer(d); })
-    .on('mouseover', (ev, d) => { const a = _anomalyByEntity[d.id]; if (a?.cpu > 0) showTT(ev, `${d.id}<br>CPU: <b style="color:#f97316">${(a.cpu*100).toFixed(0)}%</b>${a.signal?` &nbsp; signal: <b>${a.signal}</b>`:''}`); })
+    .on('click', (ev, d) => { if (!d.inferred) { ev.stopPropagation(); openNodeDrawer(d); } })
+    .on('mouseover', (ev, d) => {
+      if (d.inferred) {
+        const edge = filteredEdges.find(e => e.target_service === d.id);
+        const dbType = d.id.includes('/') ? d.id.split('/')[0] : d.id;
+        showTT(ev, `<b>${d.id}</b> <span style="color:var(--muted)">(inferred)</span><br>type: <b>${dbType}</b>${edge ? `<br>calls: <b>${edge.call_count}</b> · err: <b>${((edge.error_count/edge.call_count)*100).toFixed(1)}%</b>` : ''}`);
+      } else {
+        const a = _anomalyByEntity[d.id];
+        if (a?.cpu > 0) showTT(ev, `${d.id}<br>CPU: <b style="color:#f97316">${(a.cpu*100).toFixed(0)}%</b>${a.signal?` &nbsp; signal: <b>${a.signal}</b>`:''}`);
+      }
+    })
     .on('mousemove', moveTT)
     .on('mouseout',  hideTT);
 
-  node.append('circle').attr('r', 24);
-  node.append('circle').attr('class', 'topo-pulse').attr('r', 0);
+  // Real nodes
+  node.filter(d => !d.inferred).append('circle').attr('r', 24);
+  node.filter(d => !d.inferred).append('circle').attr('class', 'topo-pulse').attr('r', 0);
+  // Inferred nodes — smaller dashed circle with muted fill
+  node.filter(d => d.inferred).append('circle').attr('r', 18)
+    .attr('fill', '#1a2332').attr('stroke', '#4a5568').attr('stroke-width', 1.5)
+    .attr('stroke-dasharray', '4,3');
+  node.filter(d => d.inferred).append('text').attr('dy', '4px').attr('font-size', '9px')
+    .attr('fill', '#64748b').attr('text-anchor', 'middle').attr('font-weight', '600')
+    .text(d => { const p = d.id.split('/'); return p.length > 1 ? p[0].slice(0,3).toUpperCase() : d.id.slice(0,3).toUpperCase(); });
 
   // CPU arc indicator (drawn per-node when CPU data exists)
   node.each(function(d) {
@@ -1858,10 +1930,17 @@ function renderServiceMap(entities, edges) {
 
   // Service name label (below circle)
   node.append('text')
-    .attr('dy', '40px')
+    .attr('dy', d => d.inferred ? '33px' : '40px')
     .attr('font-size', '10px')
-    .attr('fill', '#e2e8f0')
-    .text(d => d.id.replace('spring-petclinic-','').slice(0, 22));
+    .attr('fill', d => d.inferred ? '#4a5568' : '#e2e8f0')
+    .text(d => {
+      if (d.inferred) {
+        // Show "dbname (type)" e.g. "petclinic (mysql)"
+        const parts = d.id.split('/');
+        return parts.length > 1 ? `${parts[1].slice(0,16)} (${parts[0]})` : d.id.slice(0,18);
+      }
+      return d.id.replace('spring-petclinic-','').slice(0, 22);
+    });
   // Error rate badge inside circle when degraded
   node.each(function(d) {
     const sig = _anomalyByEntity[d.id]?.signal;
@@ -2149,7 +2228,19 @@ async function runRCA(withAI) {
   document.getElementById('rca-body').innerHTML = '<div class="empty">Analyzing…</div>';
   const tsParam = ts ? `&ts=${ts}` : '';
   const url = `/v1/rca?entity=${encodeURIComponent(_rcaEntityID)}&window=${win}${tsParam}${withAI ? '&ai=true' : ''}`;
-  const res = await api(url);
+  const ctl = new AbortController();
+  const rcaTimeout = setTimeout(() => ctl.abort(), 15000);
+  let res;
+  try {
+    const r = await fetch(url, { signal: ctl.signal });
+    clearTimeout(rcaTimeout);
+    res = r.ok ? await r.json() : null;
+  } catch (e) {
+    clearTimeout(rcaTimeout);
+    document.getElementById('rca-body').innerHTML =
+      `<div class="empty">RCA timed out or failed — ${e.name === 'AbortError' ? 'no response in 15s' : e.message}</div>`;
+    return;
+  }
   if (!res) {
     document.getElementById('rca-body').innerHTML = '<div class="empty">RCA request failed — check console for details.</div>';
     return;
@@ -2267,7 +2358,7 @@ function renderRCAMap(r) {
     <svg viewBox="0 0 ${W} ${totalH+12}" style="width:100%;height:${totalH+16}px;display:block">
       <defs>
         ${[['red','#ef4444'],['orange','#f97316'],['green','#4ecfb3']].map(([id,c])=>
-          `<marker id="rca-arr-${id}" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 Z" fill="${c}"/></marker>`
+          `<marker id="rca-arr-${id}" markerWidth="2.5" markerHeight="2.5" refX="2.5" refY="1.25" orient="auto"><path d="M0,0 L0,2.5 L2.5,1.25 Z" fill="${c}"/></marker>`
         ).join('')}
       </defs>
       ${coSep}${edgesSVG}${nodesSVG}${upLabel}${downLabel}${coLabel}
