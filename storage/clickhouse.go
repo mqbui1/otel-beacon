@@ -36,6 +36,7 @@ func (b *ClickHouseBackend) Init(ctx context.Context) error {
 	stmts := []string{
 		fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS spans (
+			entity_id      String,
 			trace_id       String,
 			span_id        String,
 			parent_span_id String,
@@ -51,11 +52,12 @@ func (b *ClickHouseBackend) Init(ctx context.Context) error {
 			created_at     DateTime DEFAULT now()
 		) ENGINE = MergeTree()
 		PARTITION BY toYYYYMM(created_at)
-		ORDER BY (toDate(created_at), trace_id, span_id)
+		ORDER BY (toDate(created_at), entity_id, trace_id, span_id)
 		TTL created_at + INTERVAL %d DAY DELETE`, days),
 
 		fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS metrics (
+			entity_id      String,
 			name           String,
 			description    String,
 			unit           String,
@@ -67,11 +69,12 @@ func (b *ClickHouseBackend) Init(ctx context.Context) error {
 			created_at     DateTime DEFAULT now()
 		) ENGINE = MergeTree()
 		PARTITION BY toYYYYMM(created_at)
-		ORDER BY (toDate(created_at), name, timestamp_ns)
+		ORDER BY (toDate(created_at), entity_id, name, timestamp_ns)
 		TTL created_at + INTERVAL %d DAY DELETE`, days),
 
 		fmt.Sprintf(`
 		CREATE TABLE IF NOT EXISTS logs (
+			entity_id      String,
 			timestamp_ns   Int64,
 			severity       String,
 			body           String,
@@ -82,7 +85,7 @@ func (b *ClickHouseBackend) Init(ctx context.Context) error {
 			created_at     DateTime DEFAULT now()
 		) ENGINE = MergeTree()
 		PARTITION BY toYYYYMM(created_at)
-		ORDER BY (toDate(created_at), timestamp_ns)
+		ORDER BY (toDate(created_at), entity_id, timestamp_ns)
 		TTL created_at + INTERVAL %d DAY DELETE`, days),
 
 		fmt.Sprintf(`
@@ -118,9 +121,9 @@ func (b *ClickHouseBackend) FlushSpans(ctx context.Context, batch []SpanRow) err
 		return err
 	}
 	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO spans (trace_id, span_id, parent_span_id, name, kind,
+		`INSERT INTO spans (entity_id, trace_id, span_id, parent_span_id, name, kind,
 			start_ns, end_ns, duration_ms, status_code, status_msg,
-			resource_attrs, span_attrs) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+			resource_attrs, span_attrs) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		tx.Rollback()
 		return err
@@ -128,7 +131,7 @@ func (b *ClickHouseBackend) FlushSpans(ctx context.Context, batch []SpanRow) err
 	defer stmt.Close()
 	for _, r := range batch {
 		if _, err := stmt.ExecContext(ctx,
-			r.TraceID, r.SpanID, r.ParentSpanID, r.Name, r.Kind,
+			r.EntityID, r.TraceID, r.SpanID, r.ParentSpanID, r.Name, r.Kind,
 			r.StartNs, r.EndNs, r.DurationMs, r.StatusCode, r.StatusMsg,
 			r.ResourceAttrs, r.SpanAttrs,
 		); err != nil {
@@ -145,8 +148,8 @@ func (b *ClickHouseBackend) FlushMetrics(ctx context.Context, metrics []MetricRo
 		return err
 	}
 	mstmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO metrics (name, description, unit, type, timestamp_ns, value, resource_attrs, data_attrs)
-		 VALUES (?,?,?,?,?,?,?,?)`)
+		`INSERT INTO metrics (entity_id, name, description, unit, type, timestamp_ns, value, resource_attrs, data_attrs)
+		 VALUES (?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		tx.Rollback()
 		return err
@@ -154,7 +157,7 @@ func (b *ClickHouseBackend) FlushMetrics(ctx context.Context, metrics []MetricRo
 	defer mstmt.Close()
 	for _, r := range metrics {
 		if _, err := mstmt.ExecContext(ctx,
-			r.Name, r.Description, r.Unit, r.Type,
+			r.EntityID, r.Name, r.Description, r.Unit, r.Type,
 			r.TimestampNs, r.Value, r.ResourceAttrs, r.DataAttrs,
 		); err != nil {
 			tx.Rollback()
@@ -185,8 +188,8 @@ func (b *ClickHouseBackend) FlushLogs(ctx context.Context, batch []LogRow) error
 		return err
 	}
 	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO logs (timestamp_ns, severity, body, trace_id, span_id, resource_attrs, log_attrs)
-		 VALUES (?,?,?,?,?,?,?)`)
+		`INSERT INTO logs (entity_id, timestamp_ns, severity, body, trace_id, span_id, resource_attrs, log_attrs)
+		 VALUES (?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		tx.Rollback()
 		return err
@@ -194,7 +197,7 @@ func (b *ClickHouseBackend) FlushLogs(ctx context.Context, batch []LogRow) error
 	defer stmt.Close()
 	for _, r := range batch {
 		if _, err := stmt.ExecContext(ctx,
-			r.TimestampNs, r.Severity, r.Body, r.TraceID, r.SpanID,
+			r.EntityID, r.TimestampNs, r.Severity, r.Body, r.TraceID, r.SpanID,
 			r.ResourceAttrs, r.LogAttrs,
 		); err != nil {
 			tx.Rollback()
@@ -211,7 +214,7 @@ func (b *ClickHouseBackend) FlushLogs(ctx context.Context, batch []LogRow) error
 func (b *ClickHouseBackend) QuerySpans(ctx context.Context, q SpanQuery) ([]SpanRow, error) {
 	where, args := chSpanWhere(q)
 	rows, err := b.db.QueryContext(ctx,
-		`SELECT trace_id, span_id, parent_span_id, name, kind,
+		`SELECT entity_id, trace_id, span_id, parent_span_id, name, kind,
 			start_ns, end_ns, duration_ms, status_code, status_msg,
 			resource_attrs, span_attrs
 		 FROM spans`+where+` ORDER BY start_ns DESC LIMIT ?`,
@@ -227,7 +230,7 @@ func (b *ClickHouseBackend) QuerySpans(ctx context.Context, q SpanQuery) ([]Span
 func (b *ClickHouseBackend) QueryMetrics(ctx context.Context, q MetricQuery) ([]MetricRow, error) {
 	where, args := chMetricWhere(q)
 	rows, err := b.db.QueryContext(ctx,
-		`SELECT name, description, unit, type, timestamp_ns, value, resource_attrs, data_attrs
+		`SELECT entity_id, name, description, unit, type, timestamp_ns, value, resource_attrs, data_attrs
 		 FROM metrics`+where+` ORDER BY timestamp_ns DESC LIMIT ?`,
 		append(args, limit(q.Limit))...,
 	)
@@ -241,7 +244,7 @@ func (b *ClickHouseBackend) QueryMetrics(ctx context.Context, q MetricQuery) ([]
 func (b *ClickHouseBackend) QueryLogs(ctx context.Context, q LogQuery) ([]LogRow, error) {
 	where, args := chLogWhere(q)
 	rows, err := b.db.QueryContext(ctx,
-		`SELECT timestamp_ns, severity, body, trace_id, span_id, resource_attrs, log_attrs
+		`SELECT entity_id, timestamp_ns, severity, body, trace_id, span_id, resource_attrs, log_attrs
 		 FROM logs`+where+` ORDER BY timestamp_ns DESC LIMIT ?`,
 		append(args, limit(q.Limit))...,
 	)
@@ -252,12 +255,23 @@ func (b *ClickHouseBackend) QueryLogs(ctx context.Context, q LogQuery) ([]LogRow
 	return scanLogs(rows)
 }
 
-func (b *ClickHouseBackend) QueryAnomalies(ctx context.Context, lim int) ([]AnomalyRow, error) {
-	rows, err := b.db.QueryContext(ctx,
-		`SELECT entity_id, signal_type, detector_name, metric_name,
-		        value, z_score, mean, stddev, algorithm, severity, description,
-		        toUnixTimestamp(detected_at)
-		 FROM anomalies ORDER BY detected_at DESC LIMIT ?`, limit(lim))
+func (b *ClickHouseBackend) QueryAnomalies(ctx context.Context, entityID string, lim int) ([]AnomalyRow, error) {
+	var q string
+	var args []any
+	if entityID != "" {
+		q = `SELECT entity_id, signal_type, detector_name, metric_name,
+		            value, z_score, mean, stddev, algorithm, severity, description,
+		            toUnixTimestamp(detected_at)
+		     FROM anomalies WHERE entity_id = ? ORDER BY detected_at DESC LIMIT ?`
+		args = []any{entityID, limit(lim)}
+	} else {
+		q = `SELECT entity_id, signal_type, detector_name, metric_name,
+		            value, z_score, mean, stddev, algorithm, severity, description,
+		            toUnixTimestamp(detected_at)
+		     FROM anomalies ORDER BY detected_at DESC LIMIT ?`
+		args = []any{limit(lim)}
+	}
+	rows, err := b.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -323,8 +337,9 @@ func chSpanWhere(q SpanQuery) (string, []any) {
 		a = append(a, q.Name)
 	}
 	if q.Service != "" {
-		c = append(c, "JSONExtractString(resource_attrs, 'service.name') = ?")
-		a = append(a, q.Service)
+		// Fast path: entity_id column (in ORDER BY — efficient). Legacy fallback for old rows.
+		c = append(c, "(entity_id = ? OR (entity_id = '' AND JSONExtractString(resource_attrs, 'service.name') = ?))")
+		a = append(a, q.Service, q.Service)
 	}
 	if q.From > 0 {
 		c = append(c, "start_ns >= ?")
@@ -399,7 +414,11 @@ func chServiceOrK8sClauses(service string, k8sAttrs map[string]string) (string, 
 	var parts []string
 	var args []any
 	if service != "" {
-		parts = append(parts, "JSONExtractString(resource_attrs, 'service.name') = ?")
+		// Fast path: entity_id column (stored in the ORDER BY key — very efficient).
+		parts = append(parts, "entity_id = ?")
+		args = append(args, service)
+		// Legacy fallback: rows without entity_id (empty string in ClickHouse).
+		parts = append(parts, "(entity_id = '' AND JSONExtractString(resource_attrs, 'service.name') = ?)")
 		args = append(args, service)
 	}
 	allowed := map[string]bool{
@@ -413,7 +432,7 @@ func chServiceOrK8sClauses(service string, k8sAttrs map[string]string) (string, 
 		if !allowed[k] {
 			continue
 		}
-		parts = append(parts, "JSONExtractString(resource_attrs, '"+k+"') = ?")
+		parts = append(parts, "(entity_id = '' AND JSONExtractString(resource_attrs, '"+k+"') = ?)")
 		args = append(args, v)
 	}
 	if len(parts) == 0 {
@@ -433,7 +452,7 @@ func scanSpans(rows *sql.Rows) ([]SpanRow, error) {
 	var out []SpanRow
 	for rows.Next() {
 		var r SpanRow
-		if err := rows.Scan(&r.TraceID, &r.SpanID, &r.ParentSpanID, &r.Name, &r.Kind,
+		if err := rows.Scan(&r.EntityID, &r.TraceID, &r.SpanID, &r.ParentSpanID, &r.Name, &r.Kind,
 			&r.StartNs, &r.EndNs, &r.DurationMs, &r.StatusCode, &r.StatusMsg,
 			&r.ResourceAttrs, &r.SpanAttrs,
 		); err != nil {
@@ -448,7 +467,7 @@ func scanMetrics(rows *sql.Rows) ([]MetricRow, error) {
 	var out []MetricRow
 	for rows.Next() {
 		var r MetricRow
-		if err := rows.Scan(&r.Name, &r.Description, &r.Unit, &r.Type,
+		if err := rows.Scan(&r.EntityID, &r.Name, &r.Description, &r.Unit, &r.Type,
 			&r.TimestampNs, &r.Value, &r.ResourceAttrs, &r.DataAttrs,
 		); err != nil {
 			return nil, err
@@ -462,7 +481,7 @@ func scanLogs(rows *sql.Rows) ([]LogRow, error) {
 	var out []LogRow
 	for rows.Next() {
 		var r LogRow
-		if err := rows.Scan(&r.TimestampNs, &r.Severity, &r.Body,
+		if err := rows.Scan(&r.EntityID, &r.TimestampNs, &r.Severity, &r.Body,
 			&r.TraceID, &r.SpanID, &r.ResourceAttrs, &r.LogAttrs,
 		); err != nil {
 			return nil, err

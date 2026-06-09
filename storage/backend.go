@@ -7,39 +7,42 @@ import "context"
 // ---------------------------------------------------------------------------
 
 type SpanRow struct {
-	TraceID      string  `json:"trace_id"`
-	SpanID       string  `json:"span_id"`
-	ParentSpanID string  `json:"parent_span_id,omitempty"`
-	Name         string  `json:"name"`
-	Kind         int     `json:"kind"`
-	StartNs      int64   `json:"start_ns"`
-	EndNs        int64   `json:"end_ns"`
-	DurationMs   float64 `json:"duration_ms"`
-	StatusCode   int     `json:"status_code"`
-	StatusMsg    string  `json:"status_msg,omitempty"`
-	ResourceAttrs string `json:"resource_attrs"`
-	SpanAttrs    string  `json:"span_attrs"`
+	EntityID      string  `json:"-"`             // resolved at ingest; used for fast DB queries
+	TraceID       string  `json:"trace_id"`
+	SpanID        string  `json:"span_id"`
+	ParentSpanID  string  `json:"parent_span_id,omitempty"`
+	Name          string  `json:"name"`
+	Kind          int     `json:"kind"`
+	StartNs       int64   `json:"start_ns"`
+	EndNs         int64   `json:"end_ns"`
+	DurationMs    float64 `json:"duration_ms"`
+	StatusCode    int     `json:"status_code"`
+	StatusMsg     string  `json:"status_msg,omitempty"`
+	ResourceAttrs string  `json:"resource_attrs"`
+	SpanAttrs     string  `json:"span_attrs"`
 }
 
 type MetricRow struct {
-	Name         string  `json:"name"`
-	Description  string  `json:"description,omitempty"`
-	Unit         string  `json:"unit,omitempty"`
-	Type         string  `json:"type"`
-	TimestampNs  int64   `json:"timestamp_ns"`
-	Value        float64 `json:"value"`
-	ResourceAttrs string `json:"resource_attrs"`
-	DataAttrs    string  `json:"data_attrs"`
+	EntityID      string  `json:"-"` // resolved at ingest; used for fast DB queries
+	Name          string  `json:"name"`
+	Description   string  `json:"description,omitempty"`
+	Unit          string  `json:"unit,omitempty"`
+	Type          string  `json:"type"`
+	TimestampNs   int64   `json:"timestamp_ns"`
+	Value         float64 `json:"value"`
+	ResourceAttrs string  `json:"resource_attrs"`
+	DataAttrs     string  `json:"data_attrs"`
 }
 
 type LogRow struct {
-	TimestampNs  int64  `json:"timestamp_ns"`
-	Severity     string `json:"severity,omitempty"`
-	Body         string `json:"body"`
-	TraceID      string `json:"trace_id,omitempty"`
-	SpanID       string `json:"span_id,omitempty"`
+	EntityID      string `json:"-"` // resolved at ingest; used for fast DB queries
+	TimestampNs   int64  `json:"timestamp_ns"`
+	Severity      string `json:"severity,omitempty"`
+	Body          string `json:"body"`
+	TraceID       string `json:"trace_id,omitempty"`
+	SpanID        string `json:"span_id,omitempty"`
 	ResourceAttrs string `json:"resource_attrs"`
-	LogAttrs     string `json:"log_attrs"`
+	LogAttrs      string `json:"log_attrs"`
 }
 
 type AnomalyRow struct {
@@ -150,7 +153,8 @@ type Backend interface {
 	QuerySpans(ctx context.Context, q SpanQuery) ([]SpanRow, error)
 	QueryMetrics(ctx context.Context, q MetricQuery) ([]MetricRow, error)
 	QueryLogs(ctx context.Context, q LogQuery) ([]LogRow, error)
-	QueryAnomalies(ctx context.Context, limit int) ([]AnomalyRow, error)
+	// QueryAnomalies returns recent anomalies. If entityID is non-empty only that entity's rows are returned.
+	QueryAnomalies(ctx context.Context, entityID string, limit int) ([]AnomalyRow, error)
 
 	// Fingerprints / error signatures
 	UpsertTraceFingerprint(ctx context.Context, fp TraceFingerprintRow) error

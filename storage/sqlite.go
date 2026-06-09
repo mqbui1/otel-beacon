@@ -48,6 +48,14 @@ func (b *SQLiteBackend) migrateSchema(ctx context.Context) {
 		`ALTER TABLE anomalies ADD COLUMN severity TEXT DEFAULT 'warning'`,
 		`ALTER TABLE anomalies ADD COLUMN description TEXT DEFAULT ''`,
 		`ALTER TABLE entities ADD COLUMN environment TEXT DEFAULT ''`,
+		// Entity correlation: store resolved entity_id as a real indexed column.
+		`ALTER TABLE spans   ADD COLUMN entity_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE metrics ADD COLUMN entity_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE logs    ADD COLUMN entity_id TEXT NOT NULL DEFAULT ''`,
+		// Backfill existing rows from resource_attrs so the fast path is immediately usable.
+		`UPDATE spans   SET entity_id = COALESCE(json_extract(resource_attrs, '$."service.name"'), json_extract(resource_attrs, '$."host.name"'), '') WHERE entity_id = ''`,
+		`UPDATE metrics SET entity_id = COALESCE(json_extract(resource_attrs, '$."service.name"'), json_extract(resource_attrs, '$."host.name"'), '') WHERE entity_id = ''`,
+		`UPDATE logs    SET entity_id = COALESCE(json_extract(resource_attrs, '$."service.name"'), json_extract(resource_attrs, '$."host.name"'), '') WHERE entity_id = ''`,
 	}
 	for _, m := range migrations {
 		b.db.ExecContext(ctx, m) // ignore "duplicate column" errors
@@ -64,17 +72,17 @@ func (b *SQLiteBackend) FlushSpans(ctx context.Context, batch []SpanRow) error {
 	return b.inTx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.PrepareContext(ctx, `
 			INSERT INTO spans
-				(trace_id, span_id, parent_span_id, name, kind,
+				(entity_id, trace_id, span_id, parent_span_id, name, kind,
 				 start_ns, end_ns, duration_ms, status_code, status_msg,
 				 resource_attrs, span_attrs)
-			VALUES (?,?,?,?,?, ?,?,?,?,?, ?,?)`)
+			VALUES (?,?,?,?,?,?, ?,?,?,?,?, ?,?)`)
 		if err != nil {
 			return err
 		}
 		defer stmt.Close()
 		for _, r := range batch {
 			if _, err := stmt.ExecContext(ctx,
-				r.TraceID, r.SpanID, r.ParentSpanID, r.Name, r.Kind,
+				r.EntityID, r.TraceID, r.SpanID, r.ParentSpanID, r.Name, r.Kind,
 				r.StartNs, r.EndNs, r.DurationMs, r.StatusCode, r.StatusMsg,
 				r.ResourceAttrs, r.SpanAttrs,
 			); err != nil {
@@ -89,15 +97,15 @@ func (b *SQLiteBackend) FlushMetrics(ctx context.Context, metrics []MetricRow, a
 	return b.inTx(ctx, func(tx *sql.Tx) error {
 		mstmt, err := tx.PrepareContext(ctx, `
 			INSERT INTO metrics
-				(name, description, unit, type, timestamp_ns, value, resource_attrs, data_attrs)
-			VALUES (?,?,?,?,?,?,?,?)`)
+				(entity_id, name, description, unit, type, timestamp_ns, value, resource_attrs, data_attrs)
+			VALUES (?,?,?,?,?,?,?,?,?)`)
 		if err != nil {
 			return err
 		}
 		defer mstmt.Close()
 		for _, r := range metrics {
 			if _, err := mstmt.ExecContext(ctx,
-				r.Name, r.Description, r.Unit, r.Type,
+				r.EntityID, r.Name, r.Description, r.Unit, r.Type,
 				r.TimestampNs, r.Value, r.ResourceAttrs, r.DataAttrs,
 			); err != nil {
 				return err
@@ -131,15 +139,15 @@ func (b *SQLiteBackend) FlushLogs(ctx context.Context, batch []LogRow) error {
 	return b.inTx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.PrepareContext(ctx, `
 			INSERT INTO logs
-				(timestamp_ns, severity, body, trace_id, span_id, resource_attrs, log_attrs)
-			VALUES (?,?,?,?,?,?,?)`)
+				(entity_id, timestamp_ns, severity, body, trace_id, span_id, resource_attrs, log_attrs)
+			VALUES (?,?,?,?,?,?,?,?)`)
 		if err != nil {
 			return err
 		}
 		defer stmt.Close()
 		for _, r := range batch {
 			if _, err := stmt.ExecContext(ctx,
-				r.TimestampNs, r.Severity, r.Body, r.TraceID, r.SpanID,
+				r.EntityID, r.TimestampNs, r.Severity, r.Body, r.TraceID, r.SpanID,
 				r.ResourceAttrs, r.LogAttrs,
 			); err != nil {
 				return err
@@ -185,7 +193,7 @@ func (b *SQLiteBackend) QuerySpans(ctx context.Context, q SpanQuery) ([]SpanRow,
 			iargs[i] = id
 		}
 		rows, err := b.db.QueryContext(ctx,
-			`SELECT trace_id, span_id, parent_span_id, name, kind,
+			`SELECT entity_id, trace_id, span_id, parent_span_id, name, kind,
 				start_ns, end_ns, duration_ms, status_code, status_msg,
 				resource_attrs, span_attrs
 			 FROM spans WHERE trace_id IN (`+placeholders+`) ORDER BY start_ns DESC`,
@@ -198,7 +206,7 @@ func (b *SQLiteBackend) QuerySpans(ctx context.Context, q SpanQuery) ([]SpanRow,
 		var out []SpanRow
 		for rows.Next() {
 			var r SpanRow
-			if err := rows.Scan(&r.TraceID, &r.SpanID, &r.ParentSpanID, &r.Name, &r.Kind,
+			if err := rows.Scan(&r.EntityID, &r.TraceID, &r.SpanID, &r.ParentSpanID, &r.Name, &r.Kind,
 				&r.StartNs, &r.EndNs, &r.DurationMs, &r.StatusCode, &r.StatusMsg,
 				&r.ResourceAttrs, &r.SpanAttrs,
 			); err != nil {
@@ -215,7 +223,7 @@ func (b *SQLiteBackend) QuerySpans(ctx context.Context, q SpanQuery) ([]SpanRow,
 		lim = q.InternalLimit
 	}
 	rows, err := b.db.QueryContext(ctx,
-		`SELECT trace_id, span_id, parent_span_id, name, kind,
+		`SELECT entity_id, trace_id, span_id, parent_span_id, name, kind,
 			start_ns, end_ns, duration_ms, status_code, status_msg,
 			resource_attrs, span_attrs
 		 FROM spans`+where+` ORDER BY start_ns DESC LIMIT ?`,
@@ -228,7 +236,7 @@ func (b *SQLiteBackend) QuerySpans(ctx context.Context, q SpanQuery) ([]SpanRow,
 	var out []SpanRow
 	for rows.Next() {
 		var r SpanRow
-		if err := rows.Scan(&r.TraceID, &r.SpanID, &r.ParentSpanID, &r.Name, &r.Kind,
+		if err := rows.Scan(&r.EntityID, &r.TraceID, &r.SpanID, &r.ParentSpanID, &r.Name, &r.Kind,
 			&r.StartNs, &r.EndNs, &r.DurationMs, &r.StatusCode, &r.StatusMsg,
 			&r.ResourceAttrs, &r.SpanAttrs,
 		); err != nil {
@@ -242,7 +250,7 @@ func (b *SQLiteBackend) QuerySpans(ctx context.Context, q SpanQuery) ([]SpanRow,
 func (b *SQLiteBackend) QueryMetrics(ctx context.Context, q MetricQuery) ([]MetricRow, error) {
 	where, args := metricWhere(q)
 	rows, err := b.db.QueryContext(ctx,
-		`SELECT name, description, unit, type, timestamp_ns, value, resource_attrs, data_attrs
+		`SELECT entity_id, name, description, unit, type, timestamp_ns, value, resource_attrs, data_attrs
 		 FROM metrics`+where+` ORDER BY timestamp_ns DESC LIMIT ?`,
 		append(args, limit(q.Limit))...,
 	)
@@ -253,7 +261,7 @@ func (b *SQLiteBackend) QueryMetrics(ctx context.Context, q MetricQuery) ([]Metr
 	var out []MetricRow
 	for rows.Next() {
 		var r MetricRow
-		if err := rows.Scan(&r.Name, &r.Description, &r.Unit, &r.Type,
+		if err := rows.Scan(&r.EntityID, &r.Name, &r.Description, &r.Unit, &r.Type,
 			&r.TimestampNs, &r.Value, &r.ResourceAttrs, &r.DataAttrs,
 		); err != nil {
 			return nil, err
@@ -266,7 +274,7 @@ func (b *SQLiteBackend) QueryMetrics(ctx context.Context, q MetricQuery) ([]Metr
 func (b *SQLiteBackend) QueryLogs(ctx context.Context, q LogQuery) ([]LogRow, error) {
 	where, args := logWhere(q)
 	rows, err := b.db.QueryContext(ctx,
-		`SELECT timestamp_ns, severity, body, trace_id, span_id, resource_attrs, log_attrs
+		`SELECT entity_id, timestamp_ns, severity, body, trace_id, span_id, resource_attrs, log_attrs
 		 FROM logs`+where+` ORDER BY timestamp_ns DESC LIMIT ?`,
 		append(args, limit(q.Limit))...,
 	)
@@ -277,7 +285,7 @@ func (b *SQLiteBackend) QueryLogs(ctx context.Context, q LogQuery) ([]LogRow, er
 	var out []LogRow
 	for rows.Next() {
 		var r LogRow
-		if err := rows.Scan(&r.TimestampNs, &r.Severity, &r.Body,
+		if err := rows.Scan(&r.EntityID, &r.TimestampNs, &r.Severity, &r.Body,
 			&r.TraceID, &r.SpanID, &r.ResourceAttrs, &r.LogAttrs,
 		); err != nil {
 			return nil, err
@@ -287,11 +295,21 @@ func (b *SQLiteBackend) QueryLogs(ctx context.Context, q LogQuery) ([]LogRow, er
 	return out, rows.Err()
 }
 
-func (b *SQLiteBackend) QueryAnomalies(ctx context.Context, lim int) ([]AnomalyRow, error) {
-	rows, err := b.db.QueryContext(ctx,
-		`SELECT entity_id, signal_type, detector_name, metric_name,
-		        value, z_score, mean, stddev, algorithm, severity, description, detected_at
-		 FROM anomalies ORDER BY detected_at DESC LIMIT ?`, limit(lim))
+func (b *SQLiteBackend) QueryAnomalies(ctx context.Context, entityID string, lim int) ([]AnomalyRow, error) {
+	var q string
+	var args []any
+	if entityID != "" {
+		q = `SELECT entity_id, signal_type, detector_name, metric_name,
+		            value, z_score, mean, stddev, algorithm, severity, description, detected_at
+		     FROM anomalies WHERE entity_id = ? ORDER BY detected_at DESC LIMIT ?`
+		args = []any{entityID, limit(lim)}
+	} else {
+		q = `SELECT entity_id, signal_type, detector_name, metric_name,
+		            value, z_score, mean, stddev, algorithm, severity, description, detected_at
+		     FROM anomalies ORDER BY detected_at DESC LIMIT ?`
+		args = []any{limit(lim)}
+	}
+	rows, err := b.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -482,8 +500,9 @@ func spanWhere(q SpanQuery) (string, []any) {
 		args = append(args, q.Name)
 	}
 	if q.Service != "" {
-		clauses = append(clauses, `json_extract(resource_attrs, '$."service.name"') = ?`)
-		args = append(args, q.Service)
+		// Fast path: entity_id column (indexed). Legacy fallback for pre-migration rows.
+		clauses = append(clauses, `(entity_id = ? OR (entity_id = '' AND json_extract(resource_attrs, '$."service.name"') = ?))`)
+		args = append(args, q.Service, q.Service)
 	}
 	if q.StatusCode != 0 {
 		clauses = append(clauses, "status_code = ?")
@@ -558,13 +577,20 @@ func logWhere(q LogQuery) (string, []any) {
 	return whereClause(clauses), args
 }
 
-// serviceOrK8sClauses builds an OR clause matching service.name OR any k8s resource attrs.
+// serviceOrK8sClauses builds an OR clause for entity-based signal correlation.
+// Primary path: entity_id column (indexed, populated at ingest).
+// Fallback: json_extract on resource_attrs for rows written before the migration
+// and for k8s-attributed signals that don't carry service.name.
 // Only a fixed whitelist of k8s keys is accepted to prevent injection.
 func serviceOrK8sClauses(service string, k8sAttrs map[string]string) (string, []any) {
 	var parts []string
 	var args []any
 	if service != "" {
-		parts = append(parts, `json_extract(resource_attrs, '$."service.name"') = ?`)
+		// Fast path: entity_id column (indexed; covers both service and host entities).
+		parts = append(parts, "entity_id = ?")
+		args = append(args, service)
+		// Legacy fallback: rows written before entity_id was stored have entity_id = ''.
+		parts = append(parts, `(entity_id = '' AND json_extract(resource_attrs, '$."service.name"') = ?)`)
 		args = append(args, service)
 	}
 	allowed := map[string]bool{
@@ -578,7 +604,8 @@ func serviceOrK8sClauses(service string, k8sAttrs map[string]string) (string, []
 		if !allowed[k] {
 			continue
 		}
-		parts = append(parts, `json_extract(resource_attrs, '$."`+k+`"') = ?`)
+		// k8s attrs are only needed for infra signals without service.name (entity_id='').
+		parts = append(parts, `(entity_id = '' AND json_extract(resource_attrs, '$."`+k+`"') = ?)`)
 		args = append(args, v)
 	}
 	if len(parts) == 0 {
@@ -767,6 +794,7 @@ func (b *SQLiteBackend) QueryTopology(ctx context.Context) ([]TopologyEdge, erro
 const sqliteSchema = `
 CREATE TABLE IF NOT EXISTS spans (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id      TEXT    NOT NULL DEFAULT '',
     trace_id       TEXT    NOT NULL,
     span_id        TEXT    NOT NULL,
     parent_span_id TEXT,
@@ -783,6 +811,7 @@ CREATE TABLE IF NOT EXISTS spans (
 );
 CREATE TABLE IF NOT EXISTS metrics (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id      TEXT    NOT NULL DEFAULT '',
     name           TEXT    NOT NULL,
     description    TEXT,
     unit           TEXT,
@@ -795,6 +824,7 @@ CREATE TABLE IF NOT EXISTS metrics (
 );
 CREATE TABLE IF NOT EXISTS logs (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id      TEXT    NOT NULL DEFAULT '',
     timestamp_ns   INTEGER,
     severity       TEXT,
     body           TEXT,
@@ -856,11 +886,14 @@ CREATE TABLE IF NOT EXISTS service_topology (
     updated_at      INTEGER DEFAULT (unixepoch()),
     PRIMARY KEY (source_service, target_service)
 );
+CREATE INDEX IF NOT EXISTS idx_spans_entity_id ON spans(entity_id);
 CREATE INDEX IF NOT EXISTS idx_spans_trace_id  ON spans(trace_id);
 CREATE INDEX IF NOT EXISTS idx_spans_start_ns  ON spans(start_ns);
 CREATE INDEX IF NOT EXISTS idx_spans_span_id   ON spans(span_id);
 CREATE INDEX IF NOT EXISTS idx_spans_parent_id ON spans(parent_span_id);
-CREATE INDEX IF NOT EXISTS idx_metrics_name   ON metrics(name);
-CREATE INDEX IF NOT EXISTS idx_metrics_ts     ON metrics(timestamp_ns);
-CREATE INDEX IF NOT EXISTS idx_logs_ts        ON logs(timestamp_ns);
+CREATE INDEX IF NOT EXISTS idx_metrics_name      ON metrics(name);
+CREATE INDEX IF NOT EXISTS idx_metrics_ts        ON metrics(timestamp_ns);
+CREATE INDEX IF NOT EXISTS idx_metrics_entity_id ON metrics(entity_id);
+CREATE INDEX IF NOT EXISTS idx_logs_ts           ON logs(timestamp_ns);
+CREATE INDEX IF NOT EXISTS idx_logs_entity_id    ON logs(entity_id);
 `

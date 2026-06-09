@@ -34,6 +34,7 @@ func NewQueryServer(store *storage.Storage, logger *zap.Logger) http.Handler {
 	mux.HandleFunc("/v1/environments", s.environments)
 	mux.HandleFunc("/v1/topology", s.topology)
 	mux.HandleFunc("/v1/entity/signals", s.entitySignals)
+	mux.HandleFunc("/v1/entity/span-logs", s.spanLogs)
 	mux.HandleFunc("/v1/rca", s.rca)
 	mux.HandleFunc("/v1/incidents", s.incidents)
 	return mux
@@ -97,7 +98,7 @@ func (s *queryServer) logs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *queryServer) anomalies(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.store.QueryAnomalies(r.Context(), parseInt(r.URL.Query().Get("limit")))
+	rows, err := s.store.QueryAnomalies(r.Context(), r.URL.Query().Get("entity"), parseInt(r.URL.Query().Get("limit")))
 	writeJSON(w, rows, err, s.logger)
 }
 
@@ -130,40 +131,69 @@ func (s *queryServer) entitySignals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fromNs := time.Now().Add(-time.Hour).UnixNano()
-	ctx := r.Context()
-
-	spanRows, spanErr := s.store.QuerySpans(ctx, storage.SpanQuery{
-		Service: entityID,
-		From:    fromNs,
-		Limit:   50,
-	})
-	metricRows, metricErr := s.store.QueryMetrics(ctx, storage.MetricQuery{
-		Service: entityID,
-		From:    fromNs,
-		Limit:   50,
-	})
-	logRows, logErr := s.store.QueryLogs(ctx, storage.LogQuery{
-		Service: entityID,
-		From:    fromNs,
-		Limit:   200,
-	})
-
-	for _, err := range []error{spanErr, metricErr, logErr} {
-		if err != nil {
-			s.logger.Error("entity signals query", zap.Error(err))
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+	// Time window: default to last hour; callers can pass from/to (Unix ns) to
+	// anchor the query around a specific anomaly timestamp.
+	now := time.Now()
+	fromNs := parseInt64(r.URL.Query().Get("from"))
+	toNs := parseInt64(r.URL.Query().Get("to"))
+	if fromNs == 0 {
+		fromNs = now.Add(-time.Hour).UnixNano()
 	}
+	if toNs == 0 {
+		toNs = now.UnixNano()
+	}
+
+	ctx := r.Context()
+	k8sAttrs := entityK8sAttrs(ctx, s.store, entityID)
+
+	spanRows, _ := s.store.QuerySpans(ctx, storage.SpanQuery{
+		Service: entityID,
+		From:    fromNs,
+		To:      toNs,
+		Limit:   100,
+	})
+	metricRows, _ := s.store.QueryMetrics(ctx, storage.MetricQuery{
+		Service:  entityID,
+		K8sAttrs: k8sAttrs,
+		From:     fromNs,
+		To:       toNs,
+		Limit:    200,
+	})
+	logRows, _ := s.store.QueryLogs(ctx, storage.LogQuery{
+		Service:  entityID,
+		K8sAttrs: k8sAttrs,
+		From:     fromNs,
+		To:       toNs,
+		Limit:    200,
+	})
+	anomalyRows, _ := s.store.QueryAnomalies(ctx, entityID, 50)
+
+	// Surface ERROR spans first, then by recency.
+	sort.SliceStable(spanRows, func(i, j int) bool {
+		if spanRows[i].StatusCode != spanRows[j].StatusCode {
+			return spanRows[i].StatusCode > spanRows[j].StatusCode // ERROR (2) before OK (1/0)
+		}
+		return spanRows[i].StartNs > spanRows[j].StartNs
+	})
+
+	// Surface ERROR/FATAL logs first, then by recency.
+	sort.SliceStable(logRows, func(i, j int) bool {
+		ri, rj := severityRank(logRows[i].Severity), severityRank(logRows[j].Severity)
+		if ri != rj {
+			return ri > rj
+		}
+		return logRows[i].TimestampNs > logRows[j].TimestampNs
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"entity_type": entityType,
 		"entity_id":   entityID,
+		"window":      map[string]int64{"from_ns": fromNs, "to_ns": toNs},
 		"spans":       envelope{Data: spanRows, Count: len(spanRows)},
 		"metrics":     envelope{Data: metricRows, Count: len(metricRows)},
 		"logs":        envelope{Data: logRows, Count: len(logRows)},
+		"anomalies":   envelope{Data: anomalyRows, Count: len(anomalyRows)},
 	})
 }
 
@@ -189,7 +219,7 @@ var signalPriority = map[string]int{
 }
 
 func (s *queryServer) incidents(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.store.QueryAnomalies(r.Context(), 2000)
+	rows, err := s.store.QueryAnomalies(r.Context(), "", 2000)
 	if err != nil {
 		s.logger.Error("query anomalies for incidents", zap.Error(err))
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -304,6 +334,89 @@ func writeJSON(w http.ResponseWriter, data any, err error, logger *zap.Logger) {
 	json.NewEncoder(w).Encode(envelope{Data: data, Count: count})
 }
 
+// spanLogs correlates logs to a specific span using the entity framework.
+//
+// Primary:  logs where trace_id matches the span's trace_id (exact, when OTel trace
+//           context propagation is active in the logging framework).
+// Fallback: logs where entity_id matches and timestamp falls within the span's time
+//           window ±2 s (proximity match — works for any logging setup).
+//
+// GET /v1/entity/span-logs?entity=orders&span_start=<ns>&span_end=<ns>&trace_id=<id>
+func (s *queryServer) spanLogs(w http.ResponseWriter, r *http.Request) {
+	entityID := r.URL.Query().Get("entity")
+	spanStart := parseInt64(r.URL.Query().Get("span_start"))
+	spanEnd := parseInt64(r.URL.Query().Get("span_end"))
+	traceID := r.URL.Query().Get("trace_id")
+
+	if entityID == "" || spanStart == 0 {
+		http.Error(w, "entity and span_start are required", http.StatusBadRequest)
+		return
+	}
+	if spanEnd == 0 {
+		spanEnd = spanStart
+	}
+
+	// Extend the window ±2 s to catch logs emitted just before/after the span.
+	const bufNs = 2_000_000_000
+	fromNs := spanStart - bufNs
+	toNs := spanEnd + bufNs
+
+	ctx := r.Context()
+	logs, err := s.store.QueryLogs(ctx, storage.LogQuery{
+		Service: entityID,
+		From:    fromNs,
+		To:      toNs,
+		Limit:   100,
+	})
+	if err != nil {
+		s.logger.Error("span-logs query", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Split into exact (trace_id match) and proximity buckets.
+	// The zero-value OTel trace_id "00000000000000000000000000000000" is treated as absent.
+	const zeroTraceID = "00000000000000000000000000000000"
+	var exact, nearby []storage.LogRow
+	for _, l := range logs {
+		if traceID != "" && traceID != zeroTraceID && l.TraceID == traceID {
+			exact = append(exact, l)
+		} else {
+			nearby = append(nearby, l)
+		}
+	}
+
+	// Sort exact matches by severity then timestamp.
+	sort.SliceStable(exact, func(i, j int) bool {
+		ri, rj := severityRank(exact[i].Severity), severityRank(exact[j].Severity)
+		if ri != rj {
+			return ri > rj
+		}
+		return exact[i].TimestampNs < exact[j].TimestampNs
+	})
+
+	// Sort proximity matches by severity, then by closeness to span start.
+	sort.SliceStable(nearby, func(i, j int) bool {
+		ri, rj := severityRank(nearby[i].Severity), severityRank(nearby[j].Severity)
+		if ri != rj {
+			return ri > rj
+		}
+		di := absInt64(nearby[i].TimestampNs - spanStart)
+		dj := absInt64(nearby[j].TimestampNs - spanStart)
+		return di < dj
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"entity_id":     entityID,
+		"span_start_ns": spanStart,
+		"span_end_ns":   spanEnd,
+		"trace_id":      traceID,
+		"exact":         envelope{Data: exact, Count: len(exact)},
+		"nearby":        envelope{Data: nearby, Count: len(nearby)},
+	})
+}
+
 func parseInt(s string) int {
 	n, _ := strconv.Atoi(s)
 	return n
@@ -311,6 +424,27 @@ func parseInt(s string) int {
 
 func parseInt64(s string) int64 {
 	n, _ := strconv.ParseInt(s, 10, 64)
+	return n
+}
+
+// severityRank maps OTel/common log severity strings to a numeric rank for sorting.
+func severityRank(sev string) int {
+	switch sev {
+	case "FATAL", "CRITICAL":
+		return 4
+	case "ERROR":
+		return 3
+	case "WARN", "WARNING":
+		return 2
+	default:
+		return 1
+	}
+}
+
+func absInt64(n int64) int64 {
+	if n < 0 {
+		return -n
+	}
 	return n
 }
 

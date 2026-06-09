@@ -395,9 +395,7 @@ func (s *Storage) runSpanRateDetection() error {
 	}
 	byService := make(map[string]*svcStats)
 	for _, sp := range spans {
-		var res map[string]any
-		json.Unmarshal([]byte(sp.ResourceAttrs), &res)
-		svc, _ := res["service.name"].(string)
+		svc := sp.EntityID
 		if svc == "" {
 			continue
 		}
@@ -546,12 +544,9 @@ type fpSpan struct {
 func buildTraceFP(spans []SpanRow) (hash string, edges []string, rootSvc, rootOp string) {
 	byID := make(map[string]fpSpan, len(spans))
 	for _, s := range spans {
-		var res map[string]any
-		json.Unmarshal([]byte(s.ResourceAttrs), &res)
-		svc, _ := res["service.name"].(string)
 		byID[s.SpanID] = fpSpan{
 			SpanID: s.SpanID, ParentSpanID: s.ParentSpanID,
-			ServiceName: svc, OpName: s.Name,
+			ServiceName: s.EntityID, OpName: s.Name,
 		}
 	}
 	for _, s := range byID {

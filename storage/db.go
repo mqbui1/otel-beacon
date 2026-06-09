@@ -184,8 +184,8 @@ func (s *Storage) QueryLogs(ctx context.Context, q LogQuery) ([]LogRow, error) {
 	return s.backend.QueryLogs(ctx, q)
 }
 
-func (s *Storage) QueryAnomalies(ctx context.Context, lim int) ([]AnomalyRow, error) {
-	return s.backend.QueryAnomalies(ctx, lim)
+func (s *Storage) QueryAnomalies(ctx context.Context, entityID string, lim int) ([]AnomalyRow, error) {
+	return s.backend.QueryAnomalies(ctx, entityID, lim)
 }
 
 func (s *Storage) QueryEntities(ctx context.Context, entityType, env string) ([]EntityRow, error) {
@@ -223,18 +223,19 @@ func (s *Storage) InsertTraces(_ context.Context, td ptrace.Traces) error {
 				startNs := int64(sp.StartTimestamp())
 				endNs := int64(sp.EndTimestamp())
 				row := SpanRow{
-					TraceID:      sp.TraceID().String(),
-					SpanID:       sp.SpanID().String(),
-					ParentSpanID: sp.ParentSpanID().String(),
-					Name:         sp.Name(),
-					Kind:         int(sp.Kind()),
-					StartNs:      startNs,
-					EndNs:        endNs,
-					DurationMs:   float64(endNs-startNs) / 1e6,
-					StatusCode:   int(sp.Status().Code()),
-					StatusMsg:    sp.Status().Message(),
+					EntityID:      extractEntityID(resJSON),
+					TraceID:       sp.TraceID().String(),
+					SpanID:        sp.SpanID().String(),
+					ParentSpanID:  sp.ParentSpanID().String(),
+					Name:          sp.Name(),
+					Kind:          int(sp.Kind()),
+					StartNs:       startNs,
+					EndNs:         endNs,
+					DurationMs:    float64(endNs-startNs) / 1e6,
+					StatusCode:    int(sp.Status().Code()),
+					StatusMsg:     sp.Status().Message(),
 					ResourceAttrs: resJSON,
-					SpanAttrs:    marshalSpanAttrs(sp),
+					SpanAttrs:     marshalSpanAttrs(sp),
 				}
 				s.received.WithLabelValues("traces").Inc()
 				select {
@@ -263,7 +264,7 @@ func (s *Storage) InsertMetrics(_ context.Context, md pmetric.Metrics) error {
 }
 
 func (s *Storage) enqueueMetric(resJSON string, m pmetric.Metric) {
-	entityID := extractServiceName(resJSON)
+	entityID := extractEntityID(resJSON)
 	// Skip anomaly detection for monotonic counters (always-increasing → constant noise).
 	skipDetection := m.Type() == pmetric.MetricTypeSum && m.Sum().IsMonotonic()
 	// Also skip JVM bookkeeping metrics that fluctuate heavily during warmup but carry
@@ -279,6 +280,7 @@ func (s *Storage) enqueueMetric(resJSON string, m pmetric.Metric) {
 	}
 	enqueue := func(tsNs int64, value float64, attrs pcommon.Map) {
 		row := MetricRow{
+			EntityID:      entityID,
 			Name:          m.Name(),
 			Description:   m.Description(),
 			Unit:          m.Unit(),
@@ -330,13 +332,14 @@ func (s *Storage) InsertLogs(_ context.Context, ld plog.Logs) error {
 			for k := 0; k < sl.LogRecords().Len(); k++ {
 				lr := sl.LogRecords().At(k)
 				row := LogRow{
-					TimestampNs:  int64(lr.Timestamp()),
-					Severity:     lr.SeverityText(),
-					Body:         fmt.Sprintf("%v", lr.Body().AsRaw()),
-					TraceID:      lr.TraceID().String(),
-					SpanID:       lr.SpanID().String(),
+					EntityID:      extractEntityID(resJSON),
+					TimestampNs:   int64(lr.Timestamp()),
+					Severity:      lr.SeverityText(),
+					Body:          fmt.Sprintf("%v", lr.Body().AsRaw()),
+					TraceID:       lr.TraceID().String(),
+					SpanID:        lr.SpanID().String(),
 					ResourceAttrs: resJSON,
-					LogAttrs:     marshalAttrs(lr.Attributes()),
+					LogAttrs:      marshalAttrs(lr.Attributes()),
 				}
 				s.received.WithLabelValues("logs").Inc()
 				select {
@@ -548,6 +551,11 @@ func (s *Storage) flushMetrics(metrics []MetricRow, anomalies []AnomalyRow) {
 	})
 	s.flushDur.WithLabelValues("metrics").Observe(time.Since(start).Seconds())
 	s.batchSz.WithLabelValues("metrics").Observe(float64(len(metrics)))
+	if entities := extractEntitiesFromMetrics(metrics); len(entities) > 0 {
+		if err := s.backend.UpsertEntities(s.ctx, entities); err != nil {
+			s.onError(fmt.Errorf("upsert metric entities: %w", err))
+		}
+	}
 }
 
 func (s *Storage) flushLogs(batch []LogRow) {
@@ -557,6 +565,82 @@ func (s *Storage) flushLogs(batch []LogRow) {
 	})
 	s.flushDur.WithLabelValues("logs").Observe(time.Since(start).Seconds())
 	s.batchSz.WithLabelValues("logs").Observe(float64(len(batch)))
+	if entities := extractEntitiesFromLogs(batch); len(entities) > 0 {
+		if err := s.backend.UpsertEntities(s.ctx, entities); err != nil {
+			s.onError(fmt.Errorf("upsert log entities: %w", err))
+		}
+	}
+}
+
+// extractEntitiesFromMetrics extracts EntityRows from a metric batch.
+// Metrics may originate from services or hosts (infra exporters).
+func extractEntitiesFromMetrics(batch []MetricRow) []EntityRow {
+	type key struct{ t, id string }
+	seen := map[key]EntityRow{}
+	for _, r := range batch {
+		if r.EntityID == "" {
+			continue
+		}
+		var attrs map[string]any
+		if err := json.Unmarshal([]byte(r.ResourceAttrs), &attrs); err != nil {
+			continue
+		}
+		env, _ := attrs["deployment.environment"].(string)
+		eType := "service"
+		if _, ok := attrs["service.name"].(string); !ok {
+			eType = "host"
+		}
+		k := key{eType, r.EntityID}
+		if existing, ok := seen[k]; !ok || r.TimestampNs > existing.LastSeenNs {
+			seen[k] = EntityRow{
+				EntityType:  eType,
+				EntityID:    r.EntityID,
+				Environment: env,
+				Attrs:       r.ResourceAttrs,
+				LastSeenNs:  r.TimestampNs,
+			}
+		}
+	}
+	out := make([]EntityRow, 0, len(seen))
+	for _, e := range seen {
+		out = append(out, e)
+	}
+	return out
+}
+
+// extractEntitiesFromLogs extracts EntityRows from a log batch.
+func extractEntitiesFromLogs(batch []LogRow) []EntityRow {
+	type key struct{ t, id string }
+	seen := map[key]EntityRow{}
+	for _, r := range batch {
+		if r.EntityID == "" {
+			continue
+		}
+		var attrs map[string]any
+		if err := json.Unmarshal([]byte(r.ResourceAttrs), &attrs); err != nil {
+			continue
+		}
+		env, _ := attrs["deployment.environment"].(string)
+		eType := "service"
+		if _, ok := attrs["service.name"].(string); !ok {
+			eType = "host"
+		}
+		k := key{eType, r.EntityID}
+		if existing, ok := seen[k]; !ok || r.TimestampNs > existing.LastSeenNs {
+			seen[k] = EntityRow{
+				EntityType:  eType,
+				EntityID:    r.EntityID,
+				Environment: env,
+				Attrs:       r.ResourceAttrs,
+				LastSeenNs:  r.TimestampNs,
+			}
+		}
+	}
+	out := make([]EntityRow, 0, len(seen))
+	for _, e := range seen {
+		out = append(out, e)
+	}
+	return out
 }
 
 func (s *Storage) withRetry(signal string, fn func() error) {
@@ -638,13 +722,20 @@ func (s *Storage) Dropped() int64 {
 	return n.Load()
 }
 
-func extractServiceName(resJSON string) string {
+// extractEntityID resolves the canonical entity identifier from resource attributes.
+// Primary: service.name. Fallback: host.name (for host-level signals like node metrics/logs).
+func extractEntityID(resJSON string) string {
 	var attrs map[string]any
 	if err := json.Unmarshal([]byte(resJSON), &attrs); err != nil {
 		return ""
 	}
-	svc, _ := attrs["service.name"].(string)
-	return svc
+	if svc, ok := attrs["service.name"].(string); ok && svc != "" {
+		return svc
+	}
+	if host, ok := attrs["host.name"].(string); ok && host != "" {
+		return host
+	}
+	return ""
 }
 
 func marshalAttrs(attrs pcommon.Map) string {
