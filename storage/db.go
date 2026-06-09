@@ -73,9 +73,11 @@ type Storage struct {
 	onError   func(error)
 	promReg   prometheus.Registerer
 
-	spanCh   chan SpanRow
-	metricCh chan metricBatch // metric + pre-detected anomalies
-	logCh    chan LogRow
+	spanCh       chan SpanRow
+	metricCh     chan metricBatch // metric + pre-detected anomalies
+	logCh        chan LogRow
+	genaiCh      chan GenAISpanRow // gen_ai.* spans routed here after extraction
+	genaiEvalCh  chan GenAISpanRow // drained by the server-side LLM eval worker
 
 	wg     sync.WaitGroup
 	ctx    context.Context
@@ -137,13 +139,16 @@ func (s *Storage) Init(ctx context.Context) error {
 	s.spanCh = make(chan SpanRow, s.chanSize)
 	s.metricCh = make(chan metricBatch, s.chanSize)
 	s.logCh = make(chan LogRow, s.chanSize)
+	s.genaiCh = make(chan GenAISpanRow, s.chanSize)
+	s.genaiEvalCh = make(chan GenAISpanRow, 500) // bounded: eval is async and slower
 
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 
-	s.wg.Add(3)
+	s.wg.Add(4)
 	go s.spanWorker()
 	go s.metricsWorker()
 	go s.logsWorker()
+	go s.genaiWorker()
 
 	if s.retentionDays > 0 {
 		s.wg.Add(1)
@@ -164,7 +169,10 @@ func (s *Storage) Close() error {
 	close(s.spanCh)
 	close(s.metricCh)
 	close(s.logCh)
+	close(s.genaiCh)
 	s.wg.Wait()
+	// Close eval channel after genaiWorker has finished (so no more writes happen).
+	close(s.genaiEvalCh)
 	return s.backend.Close()
 }
 
@@ -242,6 +250,15 @@ func (s *Storage) InsertTraces(_ context.Context, td ptrace.Traces) error {
 				case s.spanCh <- row:
 				default:
 					s.dropped.WithLabelValues("traces").Inc()
+				}
+				// Route gen_ai.* spans to the dedicated GenAI worker in addition
+				// to the normal spans table (so traces waterfall still works).
+				if isGenAISpan(sp) {
+					gs := extractGenAISpan(sp, row.EntityID, resJSON)
+					select {
+					case s.genaiCh <- gs:
+					default:
+					}
 				}
 			}
 		}

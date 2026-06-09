@@ -490,3 +490,32 @@ func scanLogs(rows *sql.Rows) ([]LogRow, error) {
 	}
 	return out, rows.Err()
 }
+
+// ---------------------------------------------------------------------------
+// GenAI — ClickHouse stubs (not yet implemented; SQLite is primary for GenAI)
+// ---------------------------------------------------------------------------
+
+func (b *ClickHouseBackend) FlushGenAISpans(_ context.Context, _ []GenAISpanRow) error {
+	return nil
+}
+func (b *ClickHouseBackend) FlushEvalResults(_ context.Context, _ []EvalResultRow) error {
+	return nil
+}
+func (b *ClickHouseBackend) FlushGuardrailEvents(_ context.Context, _ []GuardrailEventRow) error {
+	return nil
+}
+func (b *ClickHouseBackend) QueryGenAISpans(_ context.Context, _ GenAIQuery) ([]GenAISpanRow, error) {
+	return nil, nil
+}
+func (b *ClickHouseBackend) QueryGenAIAgents(_ context.Context, _, _ int64) ([]GenAIAgentRow, error) {
+	return nil, nil
+}
+func (b *ClickHouseBackend) QueryGenAICosts(_ context.Context, _, _ int64, _ string) ([]GenAICostSummary, error) {
+	return nil, nil
+}
+func (b *ClickHouseBackend) QueryEvalResults(_ context.Context, _ string, _ int) ([]EvalResultRow, error) {
+	return nil, nil
+}
+func (b *ClickHouseBackend) QueryGuardrailEvents(_ context.Context, _ string, _ int) ([]GuardrailEventRow, error) {
+	return nil, nil
+}

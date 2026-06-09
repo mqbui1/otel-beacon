@@ -173,5 +173,15 @@ type Backend interface {
 	// ClickHouse implements this as a no-op since it uses table-level TTL.
 	DeleteBefore(ctx context.Context, cutoffUnix int64) error
 
+	// GenAI observability
+	FlushGenAISpans(ctx context.Context, batch []GenAISpanRow) error
+	FlushEvalResults(ctx context.Context, batch []EvalResultRow) error
+	FlushGuardrailEvents(ctx context.Context, batch []GuardrailEventRow) error
+	QueryGenAISpans(ctx context.Context, q GenAIQuery) ([]GenAISpanRow, error)
+	QueryGenAIAgents(ctx context.Context, from, to int64) ([]GenAIAgentRow, error)
+	QueryGenAICosts(ctx context.Context, from, to int64, groupBy string) ([]GenAICostSummary, error)
+	QueryEvalResults(ctx context.Context, traceID string, limit int) ([]EvalResultRow, error)
+	QueryGuardrailEvents(ctx context.Context, traceID string, limit int) ([]GuardrailEventRow, error)
+
 	Close() error
 }

@@ -37,6 +37,8 @@ func NewQueryServer(store *storage.Storage, logger *zap.Logger) http.Handler {
 	mux.HandleFunc("/v1/entity/span-logs", s.spanLogs)
 	mux.HandleFunc("/v1/rca", s.rca)
 	mux.HandleFunc("/v1/incidents", s.incidents)
+	// GenAI observability routes
+	registerGenAIRoutes(mux, store, logger)
 	return mux
 }
 

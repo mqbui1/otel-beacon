@@ -886,6 +886,58 @@ CREATE TABLE IF NOT EXISTS service_topology (
     updated_at      INTEGER DEFAULT (unixepoch()),
     PRIMARY KEY (source_service, target_service)
 );
+CREATE TABLE IF NOT EXISTS genai_spans (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    trace_id       TEXT    NOT NULL,
+    span_id        TEXT    NOT NULL,
+    parent_span_id TEXT,
+    entity_id      TEXT    NOT NULL DEFAULT '',
+    system         TEXT    NOT NULL DEFAULT '',
+    operation      TEXT    NOT NULL DEFAULT '',
+    model          TEXT    NOT NULL DEFAULT '',
+    agent_name     TEXT    NOT NULL DEFAULT '',
+    tool_name      TEXT    NOT NULL DEFAULT '',
+    input_tokens   INTEGER NOT NULL DEFAULT 0,
+    output_tokens  INTEGER NOT NULL DEFAULT 0,
+    total_cost_usd REAL    NOT NULL DEFAULT 0,
+    start_ns       INTEGER NOT NULL DEFAULT 0,
+    duration_ms    REAL    NOT NULL DEFAULT 0,
+    status_code    INTEGER NOT NULL DEFAULT 0,
+    prompt         TEXT    NOT NULL DEFAULT '',
+    completion     TEXT    NOT NULL DEFAULT '',
+    span_attrs     TEXT    NOT NULL DEFAULT '{}',
+    resource_attrs TEXT    NOT NULL DEFAULT '{}',
+    created_at     INTEGER DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_genai_spans_trace  ON genai_spans(trace_id);
+CREATE INDEX IF NOT EXISTS idx_genai_spans_entity ON genai_spans(entity_id);
+CREATE INDEX IF NOT EXISTS idx_genai_spans_model  ON genai_spans(model);
+CREATE INDEX IF NOT EXISTS idx_genai_spans_agent  ON genai_spans(agent_name);
+CREATE INDEX IF NOT EXISTS idx_genai_spans_start  ON genai_spans(start_ns);
+CREATE TABLE IF NOT EXISTS eval_results (
+    span_id        TEXT    PRIMARY KEY,
+    trace_id       TEXT    NOT NULL,
+    hallucination  REAL    NOT NULL DEFAULT 0,
+    coherence      REAL    NOT NULL DEFAULT 0,
+    relevance      REAL    NOT NULL DEFAULT 0,
+    toxicity       REAL    NOT NULL DEFAULT 0,
+    overall_score  REAL    NOT NULL DEFAULT 0,
+    reasoning      TEXT    NOT NULL DEFAULT '',
+    evaluated_at   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_eval_results_trace ON eval_results(trace_id);
+CREATE TABLE IF NOT EXISTS guardrail_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    span_id    TEXT    NOT NULL,
+    trace_id   TEXT    NOT NULL,
+    check_type TEXT    NOT NULL,
+    triggered  INTEGER NOT NULL DEFAULT 0,
+    severity   TEXT    NOT NULL DEFAULT '',
+    detail     TEXT    NOT NULL DEFAULT '',
+    checked_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_guardrail_trace ON guardrail_events(trace_id);
+CREATE INDEX IF NOT EXISTS idx_guardrail_triggered ON guardrail_events(triggered);
 CREATE INDEX IF NOT EXISTS idx_spans_entity_id ON spans(entity_id);
 CREATE INDEX IF NOT EXISTS idx_spans_trace_id  ON spans(trace_id);
 CREATE INDEX IF NOT EXISTS idx_spans_start_ns  ON spans(start_ns);
