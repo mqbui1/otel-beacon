@@ -606,6 +606,9 @@ ${AGENT_INIT_CONTAINER}
         - name: wait-mysql
           image: busybox:1.28
           command: ['sh', '-c', 'until nc -z mysql 3306; do sleep 3; done']
+        - name: wait-customers
+          image: busybox:1.28
+          command: ['sh', '-c', 'until nc -z customers-service 8081; do sleep 3; done']
       containers:
         - name: visits-service
           image: springcommunity/spring-petclinic-visits-service:latest

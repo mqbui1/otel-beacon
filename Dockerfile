@@ -1,13 +1,11 @@
 FROM golang:1.24-alpine AS builder
 WORKDIR /src
-# Copy manifests first for better layer caching
-COPY go.mod go.sum ./
-# Add AWS SDK deps (not yet pinned in go.mod) and download all modules
+COPY . .
+# Add AWS SDK deps not yet in go.mod, then build
 RUN go get github.com/aws/aws-sdk-go-v2/config@latest \
            github.com/aws/aws-sdk-go-v2/service/bedrockruntime@latest \
-    && go mod download
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /otelbackend .
+    && go mod tidy \
+    && CGO_ENABLED=0 GOOS=linux go build -o /otelbackend .
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata
