@@ -1,45 +1,58 @@
 #!/usr/bin/env bash
 # deploy-petclinic-k8s.sh
 #
-# Deploys PetClinic + OTel Collector DaemonSet (with kubeletstats) into a k3d cluster.
-# Tested on k3d running inside an EC2 host with otel-beacon on the Docker host network.
+# Deploys PetClinic + OTel into a k3d cluster, with otel-beacon as the backend.
 #
 # Prerequisites:
 #   - k3d cluster already running
-#   - opentelemetry-javaagent.jar copied to /otel/ on all k3d nodes (see step 0 below)
 #   - kubectl context pointing at the cluster
-#   - OTEL_BACKEND_ENDPOINT set to the otel-beacon OTLP endpoint reachable from pods
-#     (default: http://host.k3d.internal:4318)
+#   - OTEL_BACKEND_ENDPOINT set to the OTLP endpoint reachable from pods
+#     e.g. http://host.k3d.internal:4318  (otel-beacon running on host)
 #
 # Usage:
 #   ./deploy/deploy-petclinic-k8s.sh [namespace]
 #
+# Key env vars:
+#   OTEL_BACKEND_ENDPOINT  OTLP HTTP endpoint for exporters
+#                          (default: http://host.k3d.internal:4318)
+#   SKIP_COLLECTOR         Skip OTel Collector DaemonSet; Java apps export
+#                          directly to OTEL_BACKEND_ENDPOINT.  Set to "true"
+#                          when otel-beacon is already on the host network.
+#                          (default: false)
+#   OTEL_AGENT_VERSION     OTel Java agent version to auto-download via init
+#                          container if /otel/opentelemetry-javaagent.jar is
+#                          not already present on k3d nodes. (default: 2.14.0)
+#
 # To teardown:
-#   kubectl delete namespace petclinic
+#   kubectl delete namespace <namespace>
 
 set -euo pipefail
 
 NAMESPACE="${1:-petclinic}"
 OTEL_BACKEND="${OTEL_BACKEND_ENDPOINT:-http://host.k3d.internal:4318}"
+SKIP_COLLECTOR="${SKIP_COLLECTOR:-false}"
+OTEL_AGENT_VERSION="${OTEL_AGENT_VERSION:-2.14.0}"
 OTEL_AGENT_JAR="/otel/opentelemetry-javaagent.jar"
+OTEL_AGENT_URL="https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v${OTEL_AGENT_VERSION}/opentelemetry-javaagent.jar"
 
-echo "==> Deploying to namespace: $NAMESPACE"
-echo "==> otel-beacon endpoint: $OTEL_BACKEND"
+echo "==> Deploying to namespace:   $NAMESPACE"
+echo "==> OTLP backend endpoint:    $OTEL_BACKEND"
+echo "==> Skip OTel Collector:      $SKIP_COLLECTOR"
+echo "==> OTel Java agent version:  $OTEL_AGENT_VERSION"
 
 # ---------------------------------------------------------------------------
-# Step 0: Copy OTel Java agent to all k3d nodes (run once, or after cluster recreate)
+# OTLP env blocks injected into each petclinic pod
 # ---------------------------------------------------------------------------
-copy_agent_to_k3d_nodes() {
-  local jar_src="${1:-/home/splunk/opentelemetry-javaagent.jar}"
-  echo "--- Copying Java agent to k3d nodes ---"
-  for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
-    echo "  $node"
-    docker cp "$jar_src" "${node}:/otel/opentelemetry-javaagent.jar" 2>/dev/null || true
-  done
-}
-
-# Uncomment to copy agent (needed once per cluster lifecycle):
-# copy_agent_to_k3d_nodes
+if [ "$SKIP_COLLECTOR" = "true" ]; then
+  # Direct export to otel-beacon; no per-node collector hop needed
+  OTLP_ENDPOINT="$OTEL_BACKEND"
+  NODE_IP_YAML=""
+else
+  # Via the OTel Collector DaemonSet hostPort on each node
+  OTLP_ENDPOINT='http://$(NODE_IP):4318'
+  NODE_IP_YAML='            - name: NODE_IP
+              valueFrom: {fieldRef: {fieldPath: status.hostIP}}'
+fi
 
 # ---------------------------------------------------------------------------
 # Step 1: Namespace
@@ -47,8 +60,11 @@ copy_agent_to_k3d_nodes() {
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 
 # ---------------------------------------------------------------------------
-# Step 2: RBAC for OTel Collector
+# Steps 2-5: OTel Collector (skipped when SKIP_COLLECTOR=true)
 # ---------------------------------------------------------------------------
+if [ "$SKIP_COLLECTOR" != "true" ]; then
+
+# Step 2: RBAC
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: ServiceAccount
@@ -59,7 +75,7 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: otel-collector
+  name: otel-collector-$NAMESPACE
 rules:
 - apiGroups: [""]
   resources: [nodes, nodes/stats, nodes/proxy, pods, namespaces, endpoints]
@@ -71,21 +87,18 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: otel-collector
+  name: otel-collector-$NAMESPACE
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: otel-collector
+  name: otel-collector-$NAMESPACE
 subjects:
 - kind: ServiceAccount
   name: otel-collector
   namespace: $NAMESPACE
 EOF
 
-# ---------------------------------------------------------------------------
-# Step 3: Classic (non-projected) SA token for kubeletstats
-#   k3s kubelet rejects audience-bound projected tokens — must use legacy SA secret tokens.
-# ---------------------------------------------------------------------------
+# Step 3: Classic SA token
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: Secret
@@ -97,7 +110,6 @@ metadata:
 type: kubernetes.io/service-account-token
 EOF
 
-# Wait for token to be populated
 echo "--- Waiting for SA token ---"
 for i in $(seq 1 15); do
   TOKEN=$(kubectl get secret otel-collector-token -n "$NAMESPACE" -o jsonpath='{.data.token}' 2>/dev/null | base64 -d 2>/dev/null || true)
@@ -108,11 +120,7 @@ if [ -z "$TOKEN" ]; then echo "ERROR: SA token not populated after 30s"; exit 1;
 
 CA_CERT=$(kubectl get secret otel-collector-token -n "$NAMESPACE" -o jsonpath='{.data.ca\.crt}')
 
-# ---------------------------------------------------------------------------
-# Step 4: kubeconfig Secret for kubeletstats auth_type: kubeConfig
-#   Routes kubelet stats requests through the k8s API server proxy,
-#   avoiding direct kubelet token auth (which k3s rejects for projected tokens).
-# ---------------------------------------------------------------------------
+# Step 4: kubeconfig Secret
 kubectl create secret generic otel-collector-kubeconfig -n "$NAMESPACE" \
   --from-literal=kubeconfig="apiVersion: v1
 kind: Config
@@ -133,9 +141,7 @@ users:
     token: ${TOKEN}" \
   --dry-run=client -o yaml | kubectl apply -f -
 
-# ---------------------------------------------------------------------------
-# Step 5: OTel Collector ConfigMap
-# ---------------------------------------------------------------------------
+# Step 5: OTel Collector ConfigMap + DaemonSet
 kubectl apply -f - <<EOF
 apiVersion: v1
 kind: ConfigMap
@@ -155,8 +161,6 @@ data:
       kubeletstats:
         collection_interval: 30s
         auth_type: kubeConfig
-        # endpoint = bare node NAME (not a URL) routes via API server proxy:
-        #   <api-server>/api/v1/nodes/<node-name>/proxy/stats/summary
         endpoint: \${env:K8S_NODE_NAME}
         insecure_skip_verify: true
         metric_groups: [node, pod, container]
@@ -178,7 +182,6 @@ data:
             - k8s.replicaset.name
             - k8s.pod.start_time
         pod_association:
-          # k8s.pod.uid match is required for k3d (hostPort NAT breaks connection IP matching)
           - sources:
               - from: resource_attribute
                 name: k8s.pod.ip
@@ -208,12 +211,7 @@ data:
           receivers: [otlp]
           processors: [batch, k8sattributes]
           exporters: [otlp_http]
-EOF
-
-# ---------------------------------------------------------------------------
-# Step 6: OTel Collector DaemonSet
-# ---------------------------------------------------------------------------
-kubectl apply -f - <<EOF
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -268,18 +266,22 @@ spec:
             secretName: otel-collector-kubeconfig
 EOF
 
+echo ""
+echo "==> Waiting for collector DaemonSet rollout..."
+kubectl rollout status daemonset/otel-collector -n "$NAMESPACE" --timeout=120s
+
+fi  # end SKIP_COLLECTOR
+
 # ---------------------------------------------------------------------------
-# Step 7: MySQL (Secret + StatefulSet + Service)
-#   customers-service, vets-service, visits-service use the mysql Spring profile.
-#   SPRING_SQL_INIT_MODE=always auto-creates the schema on first boot.
+# Step 6: MySQL
 # ---------------------------------------------------------------------------
-kubectl apply -f - <<'MYSQL_EOF'
+kubectl apply -f - <<EOF
 ---
 apiVersion: v1
 kind: Secret
 metadata:
   name: mysql-secret
-  namespace: petclinic
+  namespace: $NAMESPACE
 type: Opaque
 stringData:
   mysql-root-password: "petclinic"
@@ -289,7 +291,7 @@ apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: mysql
-  namespace: petclinic
+  namespace: $NAMESPACE
 spec:
   serviceName: mysql
   replicas: 1
@@ -348,50 +350,29 @@ apiVersion: v1
 kind: Service
 metadata:
   name: mysql
-  namespace: petclinic
+  namespace: $NAMESPACE
 spec:
   selector:
     app: mysql
   ports:
     - port: 3306
       targetPort: 3306
-MYSQL_EOF
+EOF
 
 echo "--- Waiting for MySQL to be ready ---"
-kubectl rollout status statefulset/mysql -n "$NAMESPACE" --timeout=120s
+kubectl rollout status statefulset/mysql -n "$NAMESPACE" --timeout=180s
 
 # ---------------------------------------------------------------------------
-# Step 8: PetClinic services
-#   Key requirements:
-#   - hostPath /otel for Java agent (must be pre-populated on nodes)
-#   - Downward API vars BEFORE OTEL_RESOURCE_ATTRIBUTES (k8s $(VAR) substitution ordering)
-#   - nc -z health checks (not wget to /actuator/health — Spring Cloud Config intercepts it)
-#   - customers/vets/visits use docker,mysql profile with wait-mysql initContainer
+# Step 7: PetClinic services
+#
+# All pods include an otel-agent-init init container that downloads the OTel
+# Java agent to /otel on the k3d node (hostPath DirectoryOrCreate) if it is
+# not already present.  Subsequent pod restarts skip the download entirely.
 # ---------------------------------------------------------------------------
-kubectl apply -f - <<'PETCLINIC_EOF'
----
-# Config Server
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: config-server
-  namespace: petclinic
-spec:
-  replicas: 1
-  selector:
-    matchLabels: {app: config-server}
-  template:
-    metadata:
-      labels: {app: config-server}
-    spec:
-      containers:
-        - name: config-server
-          image: springcommunity/spring-petclinic-config-server:latest
-          ports: [{containerPort: 8888}]
-          env:
-            - {name: SPRING_PROFILES_ACTIVE, value: docker}
-            - {name: JAVA_TOOL_OPTIONS, value: "-javaagent:/otel/opentelemetry-javaagent.jar"}
-            - {name: OTEL_SERVICE_NAME, value: config-server}
+
+# Common otel env block (bash-expanded into the heredoc below)
+COMMON_OTEL_ENV=$(cat <<ENVEOF
+            - {name: JAVA_TOOL_OPTIONS, value: "-javaagent:${OTEL_AGENT_JAR}"}
             - {name: OTEL_EXPORTER_OTLP_PROTOCOL, value: http/protobuf}
             - {name: OTEL_METRICS_EXPORTER, value: otlp}
             - {name: OTEL_LOGS_EXPORTER, value: otlp}
@@ -402,21 +383,66 @@ spec:
             - name: POD_UID
               valueFrom: {fieldRef: {fieldPath: metadata.uid}}
             - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "deployment.environment=kubernetes,k8s.pod.name=$(POD_NAME),k8s.namespace.name=$(POD_NAMESPACE),k8s.pod.uid=$(POD_UID)"
-            - name: NODE_IP
-              valueFrom: {fieldRef: {fieldPath: status.hostIP}}
-            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://$(NODE_IP):4318"}
+              value: "deployment.environment=kubernetes,k8s.pod.name=\$(POD_NAME),k8s.namespace.name=\$(POD_NAMESPACE),k8s.pod.uid=\$(POD_UID)"
+${NODE_IP_YAML}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "${OTLP_ENDPOINT}"}
+ENVEOF
+)
+
+AGENT_INIT_CONTAINER=$(cat <<INITEOF
+      initContainers:
+        - name: otel-agent-init
+          image: alpine:3.20
+          command:
+            - sh
+            - -c
+            - "[ -f ${OTEL_AGENT_JAR} ] || wget -qO ${OTEL_AGENT_JAR} ${OTEL_AGENT_URL}"
+          volumeMounts:
+            - {name: otel-agent, mountPath: /otel}
+INITEOF
+)
+
+AGENT_VOLUME=$(cat <<VOLEOF
+        - name: otel-agent
+          hostPath: {path: /otel, type: DirectoryOrCreate}
+VOLEOF
+)
+
+kubectl apply -f - <<EOF
+---
+# Config Server
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: config-server
+  namespace: $NAMESPACE
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: config-server}
+  template:
+    metadata:
+      labels: {app: config-server}
+    spec:
+${AGENT_INIT_CONTAINER}
+      containers:
+        - name: config-server
+          image: springcommunity/spring-petclinic-config-server:latest
+          ports: [{containerPort: 8888}]
+          env:
+            - {name: SPRING_PROFILES_ACTIVE, value: docker}
+            - {name: OTEL_SERVICE_NAME, value: config-server}
+${COMMON_OTEL_ENV}
           volumeMounts:
             - {name: otel-agent, mountPath: /otel}
       volumes:
-        - name: otel-agent
-          hostPath: {path: /otel, type: DirectoryOrCreate}
+${AGENT_VOLUME}
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: config-server
-  namespace: petclinic
+  namespace: $NAMESPACE
 spec:
   selector: {app: config-server}
   ports: [{port: 8888}]
@@ -426,7 +452,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: discovery-server
-  namespace: petclinic
+  namespace: $NAMESPACE
 spec:
   replicas: 1
   selector:
@@ -435,7 +461,7 @@ spec:
     metadata:
       labels: {app: discovery-server}
     spec:
-      initContainers:
+${AGENT_INIT_CONTAINER}
         - name: wait-config
           image: busybox:1.28
           command: ['sh', '-c', 'until nc -z config-server 8888; do sleep 2; done']
@@ -445,33 +471,18 @@ spec:
           ports: [{containerPort: 8761}]
           env:
             - {name: SPRING_PROFILES_ACTIVE, value: docker}
-            - {name: JAVA_TOOL_OPTIONS, value: "-javaagent:/otel/opentelemetry-javaagent.jar"}
             - {name: OTEL_SERVICE_NAME, value: discovery-server}
-            - {name: OTEL_EXPORTER_OTLP_PROTOCOL, value: http/protobuf}
-            - {name: OTEL_METRICS_EXPORTER, value: otlp}
-            - {name: OTEL_LOGS_EXPORTER, value: otlp}
-            - name: POD_NAME
-              valueFrom: {fieldRef: {fieldPath: metadata.name}}
-            - name: POD_NAMESPACE
-              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
-            - name: POD_UID
-              valueFrom: {fieldRef: {fieldPath: metadata.uid}}
-            - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "deployment.environment=kubernetes,k8s.pod.name=$(POD_NAME),k8s.namespace.name=$(POD_NAMESPACE),k8s.pod.uid=$(POD_UID)"
-            - name: NODE_IP
-              valueFrom: {fieldRef: {fieldPath: status.hostIP}}
-            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://$(NODE_IP):4318"}
+${COMMON_OTEL_ENV}
           volumeMounts:
             - {name: otel-agent, mountPath: /otel}
       volumes:
-        - name: otel-agent
-          hostPath: {path: /otel, type: DirectoryOrCreate}
+${AGENT_VOLUME}
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: discovery-server
-  namespace: petclinic
+  namespace: $NAMESPACE
 spec:
   selector: {app: discovery-server}
   ports: [{port: 8761}]
@@ -481,7 +492,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: customers-service
-  namespace: petclinic
+  namespace: $NAMESPACE
 spec:
   replicas: 1
   selector:
@@ -490,7 +501,7 @@ spec:
     metadata:
       labels: {app: customers-service}
     spec:
-      initContainers:
+${AGENT_INIT_CONTAINER}
         - name: wait-discovery
           image: busybox:1.28
           command: ['sh', '-c', 'until nc -z discovery-server 8761; do sleep 2; done']
@@ -507,37 +518,20 @@ spec:
             - {name: SPRING_DATASOURCE_USERNAME, value: petclinic}
             - name: SPRING_DATASOURCE_PASSWORD
               valueFrom:
-                secretKeyRef:
-                  name: mysql-secret
-                  key: mysql-password
+                secretKeyRef: {name: mysql-secret, key: mysql-password}
             - {name: SPRING_SQL_INIT_MODE, value: always}
-            - {name: JAVA_TOOL_OPTIONS, value: "-javaagent:/otel/opentelemetry-javaagent.jar"}
             - {name: OTEL_SERVICE_NAME, value: customers-service}
-            - {name: OTEL_EXPORTER_OTLP_PROTOCOL, value: http/protobuf}
-            - {name: OTEL_METRICS_EXPORTER, value: otlp}
-            - {name: OTEL_LOGS_EXPORTER, value: otlp}
-            - name: POD_NAME
-              valueFrom: {fieldRef: {fieldPath: metadata.name}}
-            - name: POD_NAMESPACE
-              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
-            - name: POD_UID
-              valueFrom: {fieldRef: {fieldPath: metadata.uid}}
-            - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "deployment.environment=kubernetes,k8s.pod.name=$(POD_NAME),k8s.namespace.name=$(POD_NAMESPACE),k8s.pod.uid=$(POD_UID)"
-            - name: NODE_IP
-              valueFrom: {fieldRef: {fieldPath: status.hostIP}}
-            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://$(NODE_IP):4318"}
+${COMMON_OTEL_ENV}
           volumeMounts:
             - {name: otel-agent, mountPath: /otel}
       volumes:
-        - name: otel-agent
-          hostPath: {path: /otel, type: DirectoryOrCreate}
+${AGENT_VOLUME}
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: customers-service
-  namespace: petclinic
+  namespace: $NAMESPACE
 spec:
   selector: {app: customers-service}
   ports: [{port: 8081}]
@@ -547,7 +541,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: vets-service
-  namespace: petclinic
+  namespace: $NAMESPACE
 spec:
   replicas: 1
   selector:
@@ -556,7 +550,7 @@ spec:
     metadata:
       labels: {app: vets-service}
     spec:
-      initContainers:
+${AGENT_INIT_CONTAINER}
         - name: wait-discovery
           image: busybox:1.28
           command: ['sh', '-c', 'until nc -z discovery-server 8761; do sleep 2; done']
@@ -573,37 +567,20 @@ spec:
             - {name: SPRING_DATASOURCE_USERNAME, value: petclinic}
             - name: SPRING_DATASOURCE_PASSWORD
               valueFrom:
-                secretKeyRef:
-                  name: mysql-secret
-                  key: mysql-password
+                secretKeyRef: {name: mysql-secret, key: mysql-password}
             - {name: SPRING_SQL_INIT_MODE, value: always}
-            - {name: JAVA_TOOL_OPTIONS, value: "-javaagent:/otel/opentelemetry-javaagent.jar"}
             - {name: OTEL_SERVICE_NAME, value: vets-service}
-            - {name: OTEL_EXPORTER_OTLP_PROTOCOL, value: http/protobuf}
-            - {name: OTEL_METRICS_EXPORTER, value: otlp}
-            - {name: OTEL_LOGS_EXPORTER, value: otlp}
-            - name: POD_NAME
-              valueFrom: {fieldRef: {fieldPath: metadata.name}}
-            - name: POD_NAMESPACE
-              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
-            - name: POD_UID
-              valueFrom: {fieldRef: {fieldPath: metadata.uid}}
-            - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "deployment.environment=kubernetes,k8s.pod.name=$(POD_NAME),k8s.namespace.name=$(POD_NAMESPACE),k8s.pod.uid=$(POD_UID)"
-            - name: NODE_IP
-              valueFrom: {fieldRef: {fieldPath: status.hostIP}}
-            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://$(NODE_IP):4318"}
+${COMMON_OTEL_ENV}
           volumeMounts:
             - {name: otel-agent, mountPath: /otel}
       volumes:
-        - name: otel-agent
-          hostPath: {path: /otel, type: DirectoryOrCreate}
+${AGENT_VOLUME}
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: vets-service
-  namespace: petclinic
+  namespace: $NAMESPACE
 spec:
   selector: {app: vets-service}
   ports: [{port: 8083}]
@@ -613,7 +590,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: visits-service
-  namespace: petclinic
+  namespace: $NAMESPACE
 spec:
   replicas: 1
   selector:
@@ -622,7 +599,7 @@ spec:
     metadata:
       labels: {app: visits-service}
     spec:
-      initContainers:
+${AGENT_INIT_CONTAINER}
         - name: wait-discovery
           image: busybox:1.28
           command: ['sh', '-c', 'until nc -z discovery-server 8761; do sleep 2; done']
@@ -639,37 +616,20 @@ spec:
             - {name: SPRING_DATASOURCE_USERNAME, value: petclinic}
             - name: SPRING_DATASOURCE_PASSWORD
               valueFrom:
-                secretKeyRef:
-                  name: mysql-secret
-                  key: mysql-password
+                secretKeyRef: {name: mysql-secret, key: mysql-password}
             - {name: SPRING_SQL_INIT_MODE, value: always}
-            - {name: JAVA_TOOL_OPTIONS, value: "-javaagent:/otel/opentelemetry-javaagent.jar"}
             - {name: OTEL_SERVICE_NAME, value: visits-service}
-            - {name: OTEL_EXPORTER_OTLP_PROTOCOL, value: http/protobuf}
-            - {name: OTEL_METRICS_EXPORTER, value: otlp}
-            - {name: OTEL_LOGS_EXPORTER, value: otlp}
-            - name: POD_NAME
-              valueFrom: {fieldRef: {fieldPath: metadata.name}}
-            - name: POD_NAMESPACE
-              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
-            - name: POD_UID
-              valueFrom: {fieldRef: {fieldPath: metadata.uid}}
-            - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "deployment.environment=kubernetes,k8s.pod.name=$(POD_NAME),k8s.namespace.name=$(POD_NAMESPACE),k8s.pod.uid=$(POD_UID)"
-            - name: NODE_IP
-              valueFrom: {fieldRef: {fieldPath: status.hostIP}}
-            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://$(NODE_IP):4318"}
+${COMMON_OTEL_ENV}
           volumeMounts:
             - {name: otel-agent, mountPath: /otel}
       volumes:
-        - name: otel-agent
-          hostPath: {path: /otel, type: DirectoryOrCreate}
+${AGENT_VOLUME}
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: visits-service
-  namespace: petclinic
+  namespace: $NAMESPACE
 spec:
   selector: {app: visits-service}
   ports: [{port: 8082}]
@@ -679,7 +639,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: api-gateway
-  namespace: petclinic
+  namespace: $NAMESPACE
 spec:
   replicas: 1
   selector:
@@ -688,7 +648,7 @@ spec:
     metadata:
       labels: {app: api-gateway}
     spec:
-      initContainers:
+${AGENT_INIT_CONTAINER}
         - name: wait-discovery
           image: busybox:1.28
           command: ['sh', '-c', 'until nc -z discovery-server 8761; do sleep 2; done']
@@ -698,46 +658,31 @@ spec:
           ports: [{containerPort: 8080}]
           env:
             - {name: SPRING_PROFILES_ACTIVE, value: docker}
-            - {name: JAVA_TOOL_OPTIONS, value: "-javaagent:/otel/opentelemetry-javaagent.jar"}
             - {name: OTEL_SERVICE_NAME, value: api-gateway}
-            - {name: OTEL_EXPORTER_OTLP_PROTOCOL, value: http/protobuf}
-            - {name: OTEL_METRICS_EXPORTER, value: otlp}
-            - {name: OTEL_LOGS_EXPORTER, value: otlp}
-            - name: POD_NAME
-              valueFrom: {fieldRef: {fieldPath: metadata.name}}
-            - name: POD_NAMESPACE
-              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
-            - name: POD_UID
-              valueFrom: {fieldRef: {fieldPath: metadata.uid}}
-            - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "deployment.environment=kubernetes,k8s.pod.name=$(POD_NAME),k8s.namespace.name=$(POD_NAMESPACE),k8s.pod.uid=$(POD_UID)"
-            - name: NODE_IP
-              valueFrom: {fieldRef: {fieldPath: status.hostIP}}
-            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://$(NODE_IP):4318"}
+${COMMON_OTEL_ENV}
           volumeMounts:
             - {name: otel-agent, mountPath: /otel}
       volumes:
-        - name: otel-agent
-          hostPath: {path: /otel, type: DirectoryOrCreate}
+${AGENT_VOLUME}
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: api-gateway
-  namespace: petclinic
+  namespace: $NAMESPACE
 spec:
   type: NodePort
   selector: {app: api-gateway}
   ports:
     - port: 8080
-      nodePort: 30080
+      nodePort: 30081
 ---
 # Admin Server
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: admin-server
-  namespace: petclinic
+  namespace: $NAMESPACE
 spec:
   replicas: 1
   selector:
@@ -746,7 +691,7 @@ spec:
     metadata:
       labels: {app: admin-server}
     spec:
-      initContainers:
+${AGENT_INIT_CONTAINER}
         - name: wait-discovery
           image: busybox:1.28
           command: ['sh', '-c', 'until nc -z discovery-server 8761; do sleep 2; done']
@@ -756,46 +701,27 @@ spec:
           ports: [{containerPort: 9090}]
           env:
             - {name: SPRING_PROFILES_ACTIVE, value: docker}
-            - {name: JAVA_TOOL_OPTIONS, value: "-javaagent:/otel/opentelemetry-javaagent.jar"}
             - {name: OTEL_SERVICE_NAME, value: admin-server}
-            - {name: OTEL_EXPORTER_OTLP_PROTOCOL, value: http/protobuf}
-            - {name: OTEL_METRICS_EXPORTER, value: otlp}
-            - {name: OTEL_LOGS_EXPORTER, value: otlp}
-            - name: POD_NAME
-              valueFrom: {fieldRef: {fieldPath: metadata.name}}
-            - name: POD_NAMESPACE
-              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
-            - name: POD_UID
-              valueFrom: {fieldRef: {fieldPath: metadata.uid}}
-            - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "deployment.environment=kubernetes,k8s.pod.name=$(POD_NAME),k8s.namespace.name=$(POD_NAMESPACE),k8s.pod.uid=$(POD_UID)"
-            - name: NODE_IP
-              valueFrom: {fieldRef: {fieldPath: status.hostIP}}
-            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://$(NODE_IP):4318"}
+${COMMON_OTEL_ENV}
           volumeMounts:
             - {name: otel-agent, mountPath: /otel}
       volumes:
-        - name: otel-agent
-          hostPath: {path: /otel, type: DirectoryOrCreate}
+${AGENT_VOLUME}
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: admin-server
-  namespace: petclinic
+  namespace: $NAMESPACE
 spec:
   selector: {app: admin-server}
   ports: [{port: 9090}]
-PETCLINIC_EOF
-
-echo ""
-echo "==> Waiting for collector DaemonSet rollout..."
-kubectl rollout status daemonset/otel-collector -n "$NAMESPACE" --timeout=120s
+EOF
 
 echo ""
 echo "==> All done. Pod status:"
 kubectl get pods -n "$NAMESPACE"
 echo ""
-echo "Access PetClinic UI:  http://<EC2-PUBLIC-IP>:8090  (k3d maps NodePort 30080 -> host 8090)"
-echo "Access otel-beacon:   http://<EC2-PUBLIC-IP>:8080"
-echo "OTel ingest endpoint: $OTEL_BACKEND"
+echo "Access otel-beacon UI:  http://<EC2-PUBLIC-IP>:8080"
+echo "OTel ingest endpoint:   $OTEL_BACKEND"
+echo ""
