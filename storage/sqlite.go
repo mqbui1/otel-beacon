@@ -62,6 +62,11 @@ func (b *SQLiteBackend) migrateSchema(ctx context.Context) {
 		`UPDATE spans   SET entity_id = COALESCE(json_extract(resource_attrs, '$."service.name"'), json_extract(resource_attrs, '$."host.name"'), '') WHERE entity_id = ''`,
 		`UPDATE metrics SET entity_id = COALESCE(json_extract(resource_attrs, '$."service.name"'), json_extract(resource_attrs, '$."host.name"'), '') WHERE entity_id = ''`,
 		`UPDATE logs    SET entity_id = COALESCE(json_extract(resource_attrs, '$."service.name"'), json_extract(resource_attrs, '$."host.name"'), '') WHERE entity_id = ''`,
+		// New eval metric columns (added in phase 1).
+		`ALTER TABLE eval_results ADD COLUMN correctness           REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE eval_results ADD COLUMN instruction_adherence REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE eval_results ADD COLUMN reasoning_coherence   REAL NOT NULL DEFAULT 0`,
+		`ALTER TABLE eval_results ADD COLUMN completeness          REAL NOT NULL DEFAULT 0`,
 	}
 	for _, m := range migrations {
 		b.db.ExecContext(ctx, m) // ignore "duplicate column" errors
@@ -921,15 +926,19 @@ CREATE INDEX IF NOT EXISTS idx_genai_spans_model  ON genai_spans(model);
 CREATE INDEX IF NOT EXISTS idx_genai_spans_agent  ON genai_spans(agent_name);
 CREATE INDEX IF NOT EXISTS idx_genai_spans_start  ON genai_spans(start_ns);
 CREATE TABLE IF NOT EXISTS eval_results (
-    span_id        TEXT    PRIMARY KEY,
-    trace_id       TEXT    NOT NULL,
-    hallucination  REAL    NOT NULL DEFAULT 0,
-    coherence      REAL    NOT NULL DEFAULT 0,
-    relevance      REAL    NOT NULL DEFAULT 0,
-    toxicity       REAL    NOT NULL DEFAULT 0,
-    overall_score  REAL    NOT NULL DEFAULT 0,
-    reasoning      TEXT    NOT NULL DEFAULT '',
-    evaluated_at   INTEGER NOT NULL DEFAULT 0
+    span_id               TEXT    PRIMARY KEY,
+    trace_id              TEXT    NOT NULL,
+    hallucination         REAL    NOT NULL DEFAULT 0,
+    coherence             REAL    NOT NULL DEFAULT 0,
+    relevance             REAL    NOT NULL DEFAULT 0,
+    toxicity              REAL    NOT NULL DEFAULT 0,
+    correctness           REAL    NOT NULL DEFAULT 0,
+    instruction_adherence REAL    NOT NULL DEFAULT 0,
+    reasoning_coherence   REAL    NOT NULL DEFAULT 0,
+    completeness          REAL    NOT NULL DEFAULT 0,
+    overall_score         REAL    NOT NULL DEFAULT 0,
+    reasoning             TEXT    NOT NULL DEFAULT '',
+    evaluated_at          INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_eval_results_trace ON eval_results(trace_id);
 CREATE TABLE IF NOT EXISTS guardrail_events (

@@ -3432,11 +3432,15 @@ function renderAISpanDetailInner(span, ev, guards) {
 
   const evalHTML = ev ? `
     ${[
-      ['Hallucination', ev.hallucination, false],
-      ['Coherence',     ev.coherence,     true],
-      ['Relevance',     ev.relevance,     true],
-      ['Toxicity',      ev.toxicity,      false],
-      ['Overall',       ev.overall_score, true],
+      ['Overall',               ev.overall_score,         true],
+      ['Correctness',           ev.correctness,           true],
+      ['Coherence',             ev.coherence,             true],
+      ['Relevance',             ev.relevance,             true],
+      ['Completeness',          ev.completeness,          true],
+      ['Instr. Adherence',      ev.instruction_adherence, true],
+      ['Reasoning Coherence',   ev.reasoning_coherence,   true],
+      ['Hallucination',         ev.hallucination,         false],
+      ['Toxicity',              ev.toxicity,              false],
     ].map(([lbl, val, higherBetter]) => {
       const pct  = Math.round((val||0)*100);
       const barW = higherBetter ? pct : (100-pct);
@@ -3444,7 +3448,7 @@ function renderAISpanDetailInner(span, ev, guards) {
         ? (pct>=75?'var(--green)':pct>=50?'var(--yellow)':'var(--red)')
         : (pct<=25?'var(--green)':pct<=50?'var(--yellow)':'var(--red)');
       return `<div class="ai-score-row">
-        <span style="color:var(--muted);min-width:90px;font-size:11px">${lbl}</span>
+        <span style="color:var(--muted);min-width:130px;font-size:11px">${lbl}</span>
         <div class="ai-score-bar-wrap"><div class="ai-score-bar" style="width:${barW}%;background:${col}"></div></div>
         <span style="font-family:monospace;font-size:11px;min-width:32px;text-align:right;color:${col}">${(val||0).toFixed(2)}</span>
       </div>`;

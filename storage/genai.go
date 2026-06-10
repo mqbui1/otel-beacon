@@ -39,15 +39,19 @@ type GenAISpanRow struct {
 
 // EvalResultRow holds LLM-as-judge quality scores for a single GenAI span.
 type EvalResultRow struct {
-	SpanID        string  `json:"span_id"`
-	TraceID       string  `json:"trace_id"`
-	Hallucination float64 `json:"hallucination"`  // 0–1 (higher = more likely hallucinated)
-	Coherence     float64 `json:"coherence"`      // 0–1 (higher = more coherent)
-	Relevance     float64 `json:"relevance"`      // 0–1 (higher = more relevant)
-	Toxicity      float64 `json:"toxicity"`       // 0–1 (higher = more toxic)
-	OverallScore  float64 `json:"overall_score"`  // 0–1 composite
-	Reasoning     string  `json:"reasoning"`
-	EvaluatedAt   int64   `json:"evaluated_at"`
+	SpanID               string  `json:"span_id"`
+	TraceID              string  `json:"trace_id"`
+	Hallucination        float64 `json:"hallucination"`          // 0–1 (higher = more likely hallucinated)
+	Coherence            float64 `json:"coherence"`              // 0–1 (higher = more coherent)
+	Relevance            float64 `json:"relevance"`              // 0–1 (higher = more relevant)
+	Toxicity             float64 `json:"toxicity"`               // 0–1 (higher = more toxic)
+	Correctness          float64 `json:"correctness"`            // 0–1 (higher = more factually accurate)
+	InstructionAdherence float64 `json:"instruction_adherence"`  // 0–1 (higher = followed instructions better)
+	ReasoningCoherence   float64 `json:"reasoning_coherence"`    // 0–1 (higher = more logically consistent)
+	Completeness         float64 `json:"completeness"`           // 0–1 (higher = more complete response)
+	OverallScore         float64 `json:"overall_score"`          // 0–1 composite
+	Reasoning            string  `json:"reasoning"`
+	EvaluatedAt          int64   `json:"evaluated_at"`
 }
 
 // GuardrailEventRow records a triggered guardrail check.

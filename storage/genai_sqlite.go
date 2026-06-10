@@ -44,8 +44,11 @@ func (b *SQLiteBackend) FlushEvalResults(ctx context.Context, batch []EvalResult
 	return b.inTx(ctx, func(tx *sql.Tx) error {
 		stmt, err := tx.PrepareContext(ctx, `
 			INSERT OR REPLACE INTO eval_results
-				(span_id, trace_id, hallucination, coherence, relevance, toxicity, overall_score, reasoning, evaluated_at)
-			VALUES (?,?,?,?,?,?,?,?,?)`)
+				(span_id, trace_id,
+				 hallucination, coherence, relevance, toxicity,
+				 correctness, instruction_adherence, reasoning_coherence, completeness,
+				 overall_score, reasoning, evaluated_at)
+			VALUES (?,?, ?,?,?,?, ?,?,?,?, ?,?,?)`)
 		if err != nil {
 			return err
 		}
@@ -54,6 +57,7 @@ func (b *SQLiteBackend) FlushEvalResults(ctx context.Context, batch []EvalResult
 			if _, err := stmt.ExecContext(ctx,
 				r.SpanID, r.TraceID,
 				r.Hallucination, r.Coherence, r.Relevance, r.Toxicity,
+				r.Correctness, r.InstructionAdherence, r.ReasoningCoherence, r.Completeness,
 				r.OverallScore, r.Reasoning, r.EvaluatedAt,
 			); err != nil {
 				return err
@@ -200,7 +204,10 @@ func (b *SQLiteBackend) QueryEvalResults(ctx context.Context, traceID string, li
 		args = append(args, traceID)
 	}
 	rows, err := b.db.QueryContext(ctx,
-		`SELECT span_id, trace_id, hallucination, coherence, relevance, toxicity, overall_score, reasoning, evaluated_at
+		`SELECT span_id, trace_id,
+		        hallucination, coherence, relevance, toxicity,
+		        correctness, instruction_adherence, reasoning_coherence, completeness,
+		        overall_score, reasoning, evaluated_at
 		 FROM eval_results`+where+` ORDER BY evaluated_at DESC LIMIT ?`,
 		append(args, limit(lim))...,
 	)
@@ -214,6 +221,7 @@ func (b *SQLiteBackend) QueryEvalResults(ctx context.Context, traceID string, li
 		if err := rows.Scan(
 			&r.SpanID, &r.TraceID,
 			&r.Hallucination, &r.Coherence, &r.Relevance, &r.Toxicity,
+			&r.Correctness, &r.InstructionAdherence, &r.ReasoningCoherence, &r.Completeness,
 			&r.OverallScore, &r.Reasoning, &r.EvaluatedAt,
 		); err != nil {
 			return nil, err

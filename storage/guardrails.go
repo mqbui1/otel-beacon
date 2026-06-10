@@ -39,6 +39,16 @@ var (
 		"synthesize poison", "manufacture drugs",
 		"child porn", "csam",
 	}
+
+	// Sexism / gender bias patterns.
+	reSexism = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(women|girls?|females?)\s+(are|can'?t|cannot|don'?t|shouldn'?t|aren'?t)\s+(as\s+)?(smart|logical|capable|good|strong|rational)`),
+		regexp.MustCompile(`(?i)(men|males?|boys?)\s+(are|should)\s+(always|never|only|inherently)`),
+		regexp.MustCompile(`(?i)(belong\s+in\s+the\s+kitchen|make\s+me\s+a\s+sandwich)`),
+		regexp.MustCompile(`(?i)(bossy|hysterical|emotional|irrational)\s+(bitch|woman|female|girl)`),
+		regexp.MustCompile(`(?i)(man\s+up|like\s+a\s+girl|throw\s+like\s+a\s+girl|act\s+like\s+a\s+(man|woman))`),
+		regexp.MustCompile(`(?i)(gender\s+pay\s+gap\s+(is\s+)?(fake|myth|not\s+real))`),
+	}
 )
 
 // checkGuardrails runs all tier-1 checks on a GenAI span and returns any triggered events.
@@ -118,6 +128,22 @@ func checkGuardrails(gs GenAISpanRow) []GuardrailEventRow {
 					Triggered: true,
 					Severity:  "high",
 					Detail:    "Keyword match in " + text.checkType,
+					CheckedAt: now,
+				})
+				break
+			}
+		}
+
+		// --- Sexism / gender bias scan ---
+		for _, re := range reSexism {
+			if re.MatchString(text.content) {
+				events = append(events, GuardrailEventRow{
+					SpanID:    gs.SpanID,
+					TraceID:   gs.TraceID,
+					CheckType: "sexism",
+					Triggered: true,
+					Severity:  "medium",
+					Detail:    "Gender bias pattern in " + text.checkType,
 					CheckedAt: now,
 				})
 				break

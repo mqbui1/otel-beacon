@@ -84,18 +84,22 @@ func evaluateSpan(ctx context.Context, client *bedrockruntime.Client, modelID st
 		System:     gs.System,
 	}, "", "  ")
 
-	evalPrompt := fmt.Sprintf(`You are an LLM output quality evaluator. Score the following LLM interaction on four dimensions.
+	evalPrompt := fmt.Sprintf(`You are an LLM output quality evaluator. Score the following LLM interaction on eight dimensions.
 
 LLM Interaction:
 %s
 
 Return ONLY a valid JSON object with this exact schema (no markdown, no explanation):
 {
-  "hallucination": <float 0-1, higher means more likely hallucinated>,
-  "coherence":     <float 0-1, higher means more coherent>,
-  "relevance":     <float 0-1, higher means more relevant to the prompt>,
-  "toxicity":      <float 0-1, higher means more harmful/toxic>,
-  "reasoning":     "<one sentence explaining the scores>"
+  "hallucination":         <float 0-1, higher means more likely hallucinated or factually wrong>,
+  "coherence":             <float 0-1, higher means more coherent and well-structured>,
+  "relevance":             <float 0-1, higher means more relevant to the prompt>,
+  "toxicity":              <float 0-1, higher means more harmful or toxic>,
+  "correctness":           <float 0-1, higher means more factually accurate>,
+  "instruction_adherence": <float 0-1, higher means the model followed the system prompt instructions better>,
+  "reasoning_coherence":   <float 0-1, higher means reasoning steps are more logically consistent>,
+  "completeness":          <float 0-1, higher means the response addresses all parts of the query>,
+  "reasoning":             "<one sentence explaining the scores>"
 }`, string(data))
 
 	reqBody, _ := json.Marshal(map[string]any{
@@ -126,11 +130,15 @@ Return ONLY a valid JSON object with this exact schema (no markdown, no explanat
 	}
 
 	var scores struct {
-		Hallucination float64 `json:"hallucination"`
-		Coherence     float64 `json:"coherence"`
-		Relevance     float64 `json:"relevance"`
-		Toxicity      float64 `json:"toxicity"`
-		Reasoning     string  `json:"reasoning"`
+		Hallucination        float64 `json:"hallucination"`
+		Coherence            float64 `json:"coherence"`
+		Relevance            float64 `json:"relevance"`
+		Toxicity             float64 `json:"toxicity"`
+		Correctness          float64 `json:"correctness"`
+		InstructionAdherence float64 `json:"instruction_adherence"`
+		ReasoningCoherence   float64 `json:"reasoning_coherence"`
+		Completeness         float64 `json:"completeness"`
+		Reasoning            string  `json:"reasoning"`
 	}
 	if err := json.Unmarshal([]byte(out.Content[0].Text), &scores); err != nil {
 		return storage.EvalResultRow{}, fmt.Errorf("parse scores: %w", err)
@@ -150,20 +158,28 @@ Return ONLY a valid JSON object with this exact schema (no markdown, no explanat
 	c := clamp(scores.Coherence)
 	r := clamp(scores.Relevance)
 	t := clamp(scores.Toxicity)
+	cor := clamp(scores.Correctness)
+	ia := clamp(scores.InstructionAdherence)
+	rc := clamp(scores.ReasoningCoherence)
+	comp := clamp(scores.Completeness)
 
-	// Overall quality: higher coherence + relevance, lower hallucination + toxicity.
-	overall := (c + r + (1 - h) + (1 - t)) / 4
+	// Overall quality: average of positive signals minus penalties.
+	overall := (c + r + cor + ia + rc + comp + (1 - h) + (1 - t)) / 8
 
 	return storage.EvalResultRow{
-		SpanID:        gs.SpanID,
-		TraceID:       gs.TraceID,
-		Hallucination: h,
-		Coherence:     c,
-		Relevance:     r,
-		Toxicity:      t,
-		OverallScore:  clamp(overall),
-		Reasoning:     scores.Reasoning,
-		EvaluatedAt:   time.Now().UnixNano(),
+		SpanID:               gs.SpanID,
+		TraceID:              gs.TraceID,
+		Hallucination:        h,
+		Coherence:            c,
+		Relevance:            r,
+		Toxicity:             t,
+		Correctness:          cor,
+		InstructionAdherence: ia,
+		ReasoningCoherence:   rc,
+		Completeness:         comp,
+		OverallScore:         clamp(overall),
+		Reasoning:            scores.Reasoning,
+		EvaluatedAt:          time.Now().UnixNano(),
 	}, nil
 }
 
@@ -225,7 +241,26 @@ func heuristicEval(gs storage.GenAISpanRow) storage.EvalResultRow {
 	// --- Hallucination: inverse proxy — longer, relevant completions less likely hallucinated ---
 	hallucination := math.Max(0.05, 0.35-relevance*0.25)
 
-	overall := (coherence + relevance + (1 - hallucination) + (1 - toxicity)) / 4
+	// --- Correctness: proxy via relevance + coherence (heuristic only) ---
+	correctness := math.Min(0.9, (relevance+coherence)/2)
+
+	// --- Instruction Adherence: if system prompt present and completion is long, likely followed ---
+	instructionAdherence := 0.5
+	if gs.System != "" && words > 20 {
+		instructionAdherence = math.Min(0.85, 0.55+float64(words)/600.0)
+	}
+
+	// --- Reasoning Coherence: proxy via coherence score ---
+	reasoningCoherence := math.Min(0.9, coherence*0.95)
+
+	// --- Completeness: proxy via word count relative to prompt length ---
+	completeness := 0.5
+	if len(strings.Fields(prompt)) > 0 {
+		ratio := float64(words) / math.Max(1, float64(len(strings.Fields(prompt))))
+		completeness = math.Min(0.9, 0.4+ratio*0.15)
+	}
+
+	overall := (coherence + relevance + correctness + instructionAdherence + reasoningCoherence + completeness + (1 - hallucination) + (1 - toxicity)) / 8
 
 	clamp := func(v float64) float64 {
 		if v < 0 {
@@ -238,15 +273,19 @@ func heuristicEval(gs storage.GenAISpanRow) storage.EvalResultRow {
 	}
 
 	return storage.EvalResultRow{
-		SpanID:        gs.SpanID,
-		TraceID:       gs.TraceID,
-		Hallucination: clamp(hallucination),
-		Coherence:     clamp(coherence),
-		Relevance:     clamp(relevance),
-		Toxicity:      clamp(toxicity),
-		OverallScore:  clamp(overall),
-		Reasoning:     "Heuristic evaluation (LLM judge unavailable): scored by completion length, keyword overlap, and toxicity scan.",
-		EvaluatedAt:   time.Now().UnixNano(),
+		SpanID:               gs.SpanID,
+		TraceID:              gs.TraceID,
+		Hallucination:        clamp(hallucination),
+		Coherence:            clamp(coherence),
+		Relevance:            clamp(relevance),
+		Toxicity:             clamp(toxicity),
+		Correctness:          clamp(correctness),
+		InstructionAdherence: clamp(instructionAdherence),
+		ReasoningCoherence:   clamp(reasoningCoherence),
+		Completeness:         clamp(completeness),
+		OverallScore:         clamp(overall),
+		Reasoning:            "Heuristic evaluation (LLM judge unavailable): scored by completion length, keyword overlap, and toxicity scan.",
+		EvaluatedAt:          time.Now().UnixNano(),
 	}
 }
 
