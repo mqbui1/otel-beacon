@@ -19,7 +19,9 @@ func registerGenAIRoutes(mux *http.ServeMux, store *storage.Storage, logger *zap
 	mux.HandleFunc("/v1/genai/eval", g.eval)
 	mux.HandleFunc("/v1/genai/guardrails", g.guardrailEvents)
 	mux.HandleFunc("/v1/genai/guardrails/check", g.guardrailCheck)
-	mux.HandleFunc("/v1/genai/trace/", g.traceWaterfall) // /v1/genai/trace/{trace_id}
+	mux.HandleFunc("/v1/genai/trace/", g.traceWaterfall)   // /v1/genai/trace/{trace_id}
+	mux.HandleFunc("/v1/genai/sessions", g.sessions)       // GET /v1/genai/sessions?entity=&limit=
+	mux.HandleFunc("/v1/genai/sessions/", g.sessionDetail) // GET /v1/genai/sessions/{session_id}
 }
 
 type genaiServer struct {
@@ -104,6 +106,49 @@ func (g *genaiServer) guardrailEvents(w http.ResponseWriter, r *http.Request) {
 	lim := parseInt(r.URL.Query().Get("limit"))
 	rows, err := g.store.QueryGuardrailEvents(r.Context(), traceID, lim)
 	writeJSON(w, rows, err, g.logger)
+}
+
+// GET /v1/genai/sessions?entity=&limit=
+func (g *genaiServer) sessions(w http.ResponseWriter, r *http.Request) {
+	entity := r.URL.Query().Get("entity")
+	lim := parseInt(r.URL.Query().Get("limit"))
+	rows, err := g.store.QuerySessions(r.Context(), entity, lim)
+	writeJSON(w, rows, err, g.logger)
+}
+
+// GET /v1/genai/sessions/{session_id}
+func (g *genaiServer) sessionDetail(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimPrefix(r.URL.Path, "/v1/genai/sessions/")
+	if sessionID == "" {
+		http.Error(w, "missing session_id", http.StatusBadRequest)
+		return
+	}
+	sess, err := g.store.QuerySession(r.Context(), sessionID)
+	if err != nil {
+		writeJSON(w, nil, err, g.logger)
+		return
+	}
+	spans, _ := g.store.QueryGenAISpans(r.Context(), storage.GenAIQuery{SessionID: sessionID, Limit: 500})
+	evals, _ := g.store.QueryEvalResults(r.Context(), "", 500)
+
+	// Filter evals to only those belonging to spans in this session.
+	spanSet := make(map[string]bool, len(spans))
+	for _, sp := range spans {
+		spanSet[sp.SpanID] = true
+	}
+	var sessionEvals []storage.EvalResultRow
+	for _, ev := range evals {
+		if spanSet[ev.SpanID] {
+			sessionEvals = append(sessionEvals, ev)
+		}
+	}
+
+	type sessionDetailResponse struct {
+		Session *storage.SessionRow      `json:"session"`
+		Spans   []storage.GenAISpanRow   `json:"spans"`
+		Evals   []storage.EvalResultRow  `json:"evals"`
+	}
+	writeJSON(w, sessionDetailResponse{Session: sess, Spans: spans, Evals: sessionEvals}, nil, g.logger)
 }
 
 // POST /v1/genai/guardrails/check

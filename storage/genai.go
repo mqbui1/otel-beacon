@@ -33,6 +33,7 @@ type GenAISpanRow struct {
 	StatusCode    int     `json:"status_code"`
 	Prompt        string  `json:"prompt,omitempty"`     // from gen_ai.user.message event
 	Completion    string  `json:"completion,omitempty"` // from gen_ai.assistant.message event
+	SessionID     string  `json:"session_id,omitempty"` // session.id span attribute
 	SpanAttrs     string  `json:"span_attrs"`
 	ResourceAttrs string  `json:"resource_attrs"`
 }
@@ -86,9 +87,30 @@ type GenAICostSummary struct {
 	SpanCount    int64   `json:"span_count"`
 }
 
+// SessionRow holds aggregated stats and eval scores for a single user session.
+type SessionRow struct {
+	SessionID         string  `json:"session_id"`
+	EntityID          string  `json:"entity_id"`
+	TraceCount        int64   `json:"trace_count"`
+	SpanCount         int64   `json:"span_count"`
+	TotalCostUSD      float64 `json:"total_cost_usd"`
+	TotalTokens       int64   `json:"total_tokens"`
+	StartNs           int64   `json:"start_ns"`
+	LastSeenNs        int64   `json:"last_seen_ns"`
+	DurationMs        float64 `json:"duration_ms"`
+	// Session-level LLM eval
+	ActionCompletion  float64 `json:"action_completion"`  // 0-1: did agent complete all goals?
+	AgentEfficiency   float64 `json:"agent_efficiency"`   // 0-1: efficient path?
+	ConvQuality       float64 `json:"conv_quality"`       // 0-1: overall quality / satisfaction
+	UserIntentChange  float64 `json:"user_intent_change"` // 0-1: significant intent shift?
+	EvalReasoning     string  `json:"eval_reasoning"`
+	EvalAt            int64   `json:"eval_at"`
+}
+
 // GenAIQuery is the filter passed to QueryGenAISpans.
 type GenAIQuery struct {
 	TraceID   string
+	SessionID string
 	AgentName string
 	Model     string
 	System    string
@@ -250,6 +272,7 @@ func extractGenAISpan(sp ptrace.Span, entityID, resJSON string) GenAISpanRow {
 		StatusCode:    int(sp.Status().Code()),
 		Prompt:        prompt,
 		Completion:    completion,
+		SessionID:     getStr("session.id"),
 		SpanAttrs:     string(spanAttrsJSON),
 		ResourceAttrs: resJSON,
 	}
@@ -272,6 +295,22 @@ func (s *Storage) genaiWorker() {
 		s.withRetry("genai", func() error {
 			return s.backend.FlushGenAISpans(s.ctx, batch)
 		})
+
+		// Aggregate sessions from spans that carry a session_id.
+		if ids := extractSessionIDs(batch); len(ids) > 0 {
+			sessions, err := s.backend.FlushSessions(s.ctx, ids)
+			if err != nil {
+				s.onError(fmt.Errorf("flush sessions: %w", err))
+			}
+			for _, sess := range sessions {
+				if sess.EvalAt == 0 {
+					select {
+					case s.sessionEvalCh <- sess:
+					default:
+					}
+				}
+			}
+		}
 
 		// Run drift detection on cost and latency using the shared detector.
 		for _, gs := range batch {
@@ -374,7 +413,39 @@ func (s *Storage) FlushEvalResults(ctx context.Context, batch []EvalResultRow) e
 	return s.backend.FlushEvalResults(ctx, batch)
 }
 
-// GenAIEvalCh returns the channel that the server-side eval worker drains.
+// GenAIEvalCh returns the channel that the server-side span eval worker drains.
 func (s *Storage) GenAIEvalCh() <-chan GenAISpanRow {
 	return s.genaiEvalCh
+}
+
+// SessionEvalCh returns the channel that the server-side session eval worker drains.
+func (s *Storage) SessionEvalCh() <-chan SessionRow {
+	return s.sessionEvalCh
+}
+
+func (s *Storage) QuerySessions(ctx context.Context, entityID string, lim int) ([]SessionRow, error) {
+	return s.backend.QuerySessions(ctx, entityID, lim)
+}
+
+func (s *Storage) QuerySession(ctx context.Context, sessionID string) (*SessionRow, error) {
+	return s.backend.QuerySession(ctx, sessionID)
+}
+
+func (s *Storage) FlushSessionEval(ctx context.Context, sess SessionRow) error {
+	return s.backend.FlushSessionEval(ctx, sess)
+}
+
+// extractSessionIDs returns the deduplicated set of non-empty session IDs in a batch.
+func extractSessionIDs(batch []GenAISpanRow) []string {
+	seen := make(map[string]bool)
+	for _, gs := range batch {
+		if gs.SessionID != "" {
+			seen[gs.SessionID] = true
+		}
+	}
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	return ids
 }

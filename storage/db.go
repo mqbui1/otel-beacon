@@ -76,8 +76,9 @@ type Storage struct {
 	spanCh       chan SpanRow
 	metricCh     chan metricBatch // metric + pre-detected anomalies
 	logCh        chan LogRow
-	genaiCh      chan GenAISpanRow // gen_ai.* spans routed here after extraction
-	genaiEvalCh  chan GenAISpanRow // drained by the server-side LLM eval worker
+	genaiCh       chan GenAISpanRow // gen_ai.* spans routed here after extraction
+	genaiEvalCh   chan GenAISpanRow // drained by the server-side span eval worker
+	sessionEvalCh chan SessionRow   // drained by the server-side session eval worker
 
 	wg     sync.WaitGroup
 	ctx    context.Context
@@ -140,7 +141,8 @@ func (s *Storage) Init(ctx context.Context) error {
 	s.metricCh = make(chan metricBatch, s.chanSize)
 	s.logCh = make(chan LogRow, s.chanSize)
 	s.genaiCh = make(chan GenAISpanRow, s.chanSize)
-	s.genaiEvalCh = make(chan GenAISpanRow, 500) // bounded: eval is async and slower
+	s.genaiEvalCh   = make(chan GenAISpanRow, 500) // bounded: span eval is async and slower
+	s.sessionEvalCh = make(chan SessionRow, 200)   // bounded: session eval is async and slower
 
 	s.ctx, s.cancel = context.WithCancel(context.Background())
 
@@ -171,8 +173,9 @@ func (s *Storage) Close() error {
 	close(s.logCh)
 	close(s.genaiCh)
 	s.wg.Wait()
-	// Close eval channel after genaiWorker has finished (so no more writes happen).
+	// Close eval channels after genaiWorker has finished (so no more writes happen).
 	close(s.genaiEvalCh)
+	close(s.sessionEvalCh)
 	return s.backend.Close()
 }
 

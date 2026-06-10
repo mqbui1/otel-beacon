@@ -909,6 +909,7 @@
           <div class="genai-tabs">
             <button class="genai-tab-btn active" onclick="switchGenAITab('agents',this)">Agents</button>
             <button class="genai-tab-btn" onclick="switchGenAITab('models',this)">Models</button>
+            <button class="genai-tab-btn" onclick="switchGenAITab('sessions',this)">Sessions</button>
           </div>
         </div>
         <div class="genai-tab-pane active" id="g-pane-agents">
@@ -931,6 +932,19 @@
               <th style="padding:7px 8px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:right;border-bottom:1px solid var(--border)">Tokens</th>
             </tr></thead>
             <tbody id="g-models-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="genai-tab-pane" id="g-pane-sessions">
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="background:rgba(255,255,255,.025)">
+              <th style="padding:7px 12px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:left;border-bottom:1px solid var(--border)">Session</th>
+              <th style="padding:7px 8px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:right;border-bottom:1px solid var(--border)">Traces</th>
+              <th style="padding:7px 8px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:right;border-bottom:1px solid var(--border)">Cost</th>
+              <th style="padding:7px 8px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:right;border-bottom:1px solid var(--border)">Done</th>
+              <th style="padding:7px 8px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:right;border-bottom:1px solid var(--border)">Efficient</th>
+              <th style="padding:7px 8px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:right;border-bottom:1px solid var(--border)">Quality</th>
+            </tr></thead>
+            <tbody id="g-sessions-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -2945,6 +2959,8 @@ let _genaiAgents = [];
 let _genaiCosts = [];
 let _genaiEvals = {};    // span_id → EvalResultRow
 let _genaiGuards = {};   // span_id → [GuardrailEventRow]
+let _genaiSessions = []; // SessionRow[]
+let _selectedSessionId = null;
 let _selectedTraceId = null;
 
 function switchGenAITab(name, btn) {
@@ -2963,17 +2979,19 @@ async function loadGenAI() {
   if (agent) params.set('agent', agent);
   if (model) params.set('model', model);
 
-  const [spansRes, agentsRes, costsRes, evalRes, guardsRes] = await Promise.all([
+  const [spansRes, agentsRes, costsRes, evalRes, guardsRes, sessionsRes] = await Promise.all([
     api('/v1/genai/spans?' + params),
     api('/v1/genai/agents'),
     api('/v1/genai/costs?group_by=model'),
     api('/v1/genai/eval?limit=500'),
     api('/v1/genai/guardrails?limit=500'),
+    api('/v1/genai/sessions?limit=100'),
   ]);
 
-  _genaiSpans  = (spansRes?.data  || []).filter(s => !service || s.entity_id === service);
-  _genaiAgents = agentsRes?.data  || [];
-  _genaiCosts  = costsRes?.data   || [];
+  _genaiSpans    = (spansRes?.data  || []).filter(s => !service || s.entity_id === service);
+  _genaiAgents   = agentsRes?.data  || [];
+  _genaiCosts    = costsRes?.data   || [];
+  _genaiSessions = sessionsRes?.data || [];
 
   // Index evals and guardrails by span_id for O(1) lookup
   _genaiEvals  = {};
@@ -2987,6 +3005,7 @@ async function loadGenAI() {
   renderGenAIAgents();
   renderGenAIModels();
   renderGenAITraceList();
+  renderGenAISessions();
 }
 
 function renderGenAIStats() {
@@ -3143,6 +3162,50 @@ function renderGenAITraceList() {
       </div>
     </div>`;
   }).join('');
+}
+
+function renderGenAISessions() {
+  const tbody = document.getElementById('g-sessions-body');
+  if (!tbody) return;
+  if (!_genaiSessions.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">No sessions yet. Set session.id on your agent spans to group traces.</td></tr>';
+    return;
+  }
+  const th = s => `style="padding:6px 8px;font-size:11px;text-align:right;border-bottom:1px solid rgba(255,255,255,.04)"`;
+  const thl = s => `style="padding:6px 12px;font-size:11px;text-align:left;border-bottom:1px solid rgba(255,255,255,.04)"`;
+
+  function evalBar(v, colOk, colBad) {
+    if (v == null || v === 0) return '<span style="color:var(--muted);font-size:10px">—</span>';
+    const pct = Math.round(v * 100);
+    const col = v >= 0.7 ? (colOk||'var(--green)') : v >= 0.4 ? 'var(--yellow)' : (colBad||'var(--red)');
+    return `<span style="color:${col};font-size:11px;font-weight:600">${pct}%</span>`;
+  }
+
+  tbody.innerHTML = _genaiSessions.map(s => {
+    const sid = s.session_id || '';
+    const durMs = s.duration_ms || 0;
+    const dur = durMs >= 60000 ? `${(durMs/60000).toFixed(1)}m` : durMs >= 1000 ? `${(durMs/1000).toFixed(1)}s` : `${durMs}ms`;
+    const hasEval = s.eval_at && s.eval_at > 0;
+    return `<tr style="border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer" onclick="openGenAISession('${esc(sid)}')">
+      <td ${thl()}>
+        <span style="font-family:monospace;font-size:11px;color:var(--cyan)" title="${esc(sid)}">${sid.slice(0,12)}…</span>
+        <span style="font-size:10px;color:var(--muted);margin-left:6px">${dur}</span>
+        ${s.eval_reasoning ? `<div style="font-size:9px;color:var(--muted);margin-top:2px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.eval_reasoning)}">${esc(s.eval_reasoning)}</div>` : ''}
+      </td>
+      <td ${th()}><span style="color:var(--text)">${s.trace_count||0}</span> <span style="color:var(--muted);font-size:10px">/ ${s.span_count||0} spans</span></td>
+      <td ${th()}><span style="color:var(--purple)">${fmtCost(s.total_cost_usd||0)}</span></td>
+      <td ${th()}>${evalBar(hasEval ? s.action_completion : null)}</td>
+      <td ${th()}>${evalBar(hasEval ? s.agent_efficiency : null)}</td>
+      <td ${th()}>${evalBar(hasEval ? s.conv_quality : null)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function openGenAISession(sessionId) {
+  _selectedSessionId = sessionId;
+  // Switch to a trace in this session if possible
+  const span = _genaiSpans.find(s => s.session_id === sessionId);
+  if (span) openGenAITrace(span.trace_id);
 }
 
 async function openGenAITrace(traceId) {

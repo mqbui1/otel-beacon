@@ -67,6 +67,8 @@ func (b *SQLiteBackend) migrateSchema(ctx context.Context) {
 		`ALTER TABLE eval_results ADD COLUMN instruction_adherence REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE eval_results ADD COLUMN reasoning_coherence   REAL NOT NULL DEFAULT 0`,
 		`ALTER TABLE eval_results ADD COLUMN completeness          REAL NOT NULL DEFAULT 0`,
+		// Phase 2: sessions.
+		`ALTER TABLE genai_spans ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, m := range migrations {
 		b.db.ExecContext(ctx, m) // ignore "duplicate column" errors
@@ -916,6 +918,7 @@ CREATE TABLE IF NOT EXISTS genai_spans (
     status_code    INTEGER NOT NULL DEFAULT 0,
     prompt         TEXT    NOT NULL DEFAULT '',
     completion     TEXT    NOT NULL DEFAULT '',
+    session_id     TEXT    NOT NULL DEFAULT '',
     span_attrs     TEXT    NOT NULL DEFAULT '{}',
     resource_attrs TEXT    NOT NULL DEFAULT '{}',
     created_at     INTEGER DEFAULT (unixepoch())
@@ -924,7 +927,27 @@ CREATE INDEX IF NOT EXISTS idx_genai_spans_trace  ON genai_spans(trace_id);
 CREATE INDEX IF NOT EXISTS idx_genai_spans_entity ON genai_spans(entity_id);
 CREATE INDEX IF NOT EXISTS idx_genai_spans_model  ON genai_spans(model);
 CREATE INDEX IF NOT EXISTS idx_genai_spans_agent  ON genai_spans(agent_name);
-CREATE INDEX IF NOT EXISTS idx_genai_spans_start  ON genai_spans(start_ns);
+CREATE INDEX IF NOT EXISTS idx_genai_spans_start   ON genai_spans(start_ns);
+CREATE INDEX IF NOT EXISTS idx_genai_spans_session ON genai_spans(session_id);
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id         TEXT    PRIMARY KEY,
+    entity_id          TEXT    NOT NULL DEFAULT '',
+    trace_count        INTEGER NOT NULL DEFAULT 0,
+    span_count         INTEGER NOT NULL DEFAULT 0,
+    total_cost_usd     REAL    NOT NULL DEFAULT 0,
+    total_tokens       INTEGER NOT NULL DEFAULT 0,
+    start_ns           INTEGER NOT NULL DEFAULT 0,
+    last_seen_ns       INTEGER NOT NULL DEFAULT 0,
+    duration_ms        REAL    NOT NULL DEFAULT 0,
+    action_completion  REAL    NOT NULL DEFAULT 0,
+    agent_efficiency   REAL    NOT NULL DEFAULT 0,
+    conv_quality       REAL    NOT NULL DEFAULT 0,
+    user_intent_change REAL    NOT NULL DEFAULT 0,
+    eval_reasoning     TEXT    NOT NULL DEFAULT '',
+    eval_at            INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_entity   ON sessions(entity_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_seen ON sessions(last_seen_ns);
 CREATE TABLE IF NOT EXISTS eval_results (
     span_id               TEXT    PRIMARY KEY,
     trace_id              TEXT    NOT NULL,

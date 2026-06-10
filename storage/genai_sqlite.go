@@ -19,8 +19,8 @@ func (b *SQLiteBackend) FlushGenAISpans(ctx context.Context, batch []GenAISpanRo
 				 system, operation, model, agent_name, tool_name,
 				 input_tokens, output_tokens, total_cost_usd,
 				 start_ns, duration_ms, status_code,
-				 prompt, completion, span_attrs, resource_attrs)
-			VALUES (?,?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?, ?,?,?,?)`)
+				 prompt, completion, session_id, span_attrs, resource_attrs)
+			VALUES (?,?,?,?, ?,?,?,?,?, ?,?,?, ?,?,?, ?,?,?,?,?)`)
 		if err != nil {
 			return err
 		}
@@ -31,7 +31,7 @@ func (b *SQLiteBackend) FlushGenAISpans(ctx context.Context, batch []GenAISpanRo
 				r.System, r.Operation, r.Model, r.AgentName, r.ToolName,
 				r.InputTokens, r.OutputTokens, r.TotalCostUSD,
 				r.StartNs, r.DurationMs, r.StatusCode,
-				r.Prompt, r.Completion, r.SpanAttrs, r.ResourceAttrs,
+				r.Prompt, r.Completion, r.SessionID, r.SpanAttrs, r.ResourceAttrs,
 			); err != nil {
 				return err
 			}
@@ -100,7 +100,7 @@ func (b *SQLiteBackend) QueryGenAISpans(ctx context.Context, q GenAIQuery) ([]Ge
 			system, operation, model, agent_name, tool_name,
 			input_tokens, output_tokens, total_cost_usd,
 			start_ns, duration_ms, status_code,
-			prompt, completion, span_attrs, resource_attrs
+			prompt, completion, session_id, span_attrs, resource_attrs
 		 FROM genai_spans`+where+` ORDER BY start_ns DESC LIMIT ?`,
 		append(args, lim)...,
 	)
@@ -116,7 +116,7 @@ func (b *SQLiteBackend) QueryGenAISpans(ctx context.Context, q GenAIQuery) ([]Ge
 			&r.System, &r.Operation, &r.Model, &r.AgentName, &r.ToolName,
 			&r.InputTokens, &r.OutputTokens, &r.TotalCostUSD,
 			&r.StartNs, &r.DurationMs, &r.StatusCode,
-			&r.Prompt, &r.Completion, &r.SpanAttrs, &r.ResourceAttrs,
+			&r.Prompt, &r.Completion, &r.SessionID, &r.SpanAttrs, &r.ResourceAttrs,
 		); err != nil {
 			return nil, err
 		}
@@ -275,6 +275,10 @@ func genaiWhere(q GenAIQuery) (string, []any) {
 		clauses = append(clauses, "trace_id = ?")
 		args = append(args, q.TraceID)
 	}
+	if q.SessionID != "" {
+		clauses = append(clauses, "session_id = ?")
+		args = append(args, q.SessionID)
+	}
 	if q.AgentName != "" {
 		clauses = append(clauses, "agent_name = ?")
 		args = append(args, q.AgentName)
@@ -299,6 +303,125 @@ func genaiWhere(q GenAIQuery) (string, []any) {
 		return "", args
 	}
 	return " WHERE " + strings.Join(clauses, " AND "), args
+}
+
+// ---------------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------------
+
+// FlushSessions recomputes session aggregates from genai_spans and upserts them.
+// Existing eval scores are preserved on conflict.
+func (b *SQLiteBackend) FlushSessions(ctx context.Context, sessionIDs []string) ([]SessionRow, error) {
+	var result []SessionRow
+	for _, sid := range sessionIDs {
+		if _, err := b.db.ExecContext(ctx, `
+			INSERT INTO sessions (session_id, entity_id, trace_count, span_count,
+			                      total_cost_usd, total_tokens, start_ns, last_seen_ns, duration_ms)
+			SELECT session_id, MAX(entity_id),
+			       COUNT(DISTINCT trace_id), COUNT(*),
+			       SUM(total_cost_usd), SUM(input_tokens + output_tokens),
+			       MIN(start_ns),
+			       MAX(start_ns + CAST(duration_ms * 1000000 AS INTEGER)),
+			       (MAX(start_ns + CAST(duration_ms * 1000000 AS INTEGER)) - MIN(start_ns)) / 1000000.0
+			FROM genai_spans WHERE session_id = ?
+			GROUP BY session_id
+			ON CONFLICT(session_id) DO UPDATE SET
+			    trace_count    = excluded.trace_count,
+			    span_count     = excluded.span_count,
+			    total_cost_usd = excluded.total_cost_usd,
+			    total_tokens   = excluded.total_tokens,
+			    start_ns       = excluded.start_ns,
+			    last_seen_ns   = excluded.last_seen_ns,
+			    duration_ms    = excluded.duration_ms`, sid); err != nil {
+			return nil, fmt.Errorf("upsert session %s: %w", sid, err)
+		}
+		var row SessionRow
+		if err := b.db.QueryRowContext(ctx, `
+			SELECT session_id, entity_id, trace_count, span_count,
+			       total_cost_usd, total_tokens, start_ns, last_seen_ns, duration_ms,
+			       action_completion, agent_efficiency, conv_quality, user_intent_change,
+			       eval_reasoning, eval_at
+			FROM sessions WHERE session_id = ?`, sid).Scan(
+			&row.SessionID, &row.EntityID, &row.TraceCount, &row.SpanCount,
+			&row.TotalCostUSD, &row.TotalTokens, &row.StartNs, &row.LastSeenNs, &row.DurationMs,
+			&row.ActionCompletion, &row.AgentEfficiency, &row.ConvQuality, &row.UserIntentChange,
+			&row.EvalReasoning, &row.EvalAt,
+		); err != nil {
+			return nil, fmt.Errorf("read session %s: %w", sid, err)
+		}
+		result = append(result, row)
+	}
+	return result, nil
+}
+
+func (b *SQLiteBackend) FlushSessionEval(ctx context.Context, sess SessionRow) error {
+	_, err := b.db.ExecContext(ctx, `
+		UPDATE sessions SET
+		    action_completion  = ?,
+		    agent_efficiency   = ?,
+		    conv_quality       = ?,
+		    user_intent_change = ?,
+		    eval_reasoning     = ?,
+		    eval_at            = ?
+		WHERE session_id = ?`,
+		sess.ActionCompletion, sess.AgentEfficiency, sess.ConvQuality, sess.UserIntentChange,
+		sess.EvalReasoning, sess.EvalAt, sess.SessionID,
+	)
+	return err
+}
+
+func (b *SQLiteBackend) QuerySessions(ctx context.Context, entityID string, lim int) ([]SessionRow, error) {
+	var where string
+	var args []any
+	if entityID != "" {
+		where = " WHERE entity_id = ?"
+		args = append(args, entityID)
+	}
+	rows, err := b.db.QueryContext(ctx, `
+		SELECT session_id, entity_id, trace_count, span_count,
+		       total_cost_usd, total_tokens, start_ns, last_seen_ns, duration_ms,
+		       action_completion, agent_efficiency, conv_quality, user_intent_change,
+		       eval_reasoning, eval_at
+		FROM sessions`+where+` ORDER BY last_seen_ns DESC LIMIT ?`,
+		append(args, limit(lim))...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionRow
+	for rows.Next() {
+		var r SessionRow
+		if err := rows.Scan(
+			&r.SessionID, &r.EntityID, &r.TraceCount, &r.SpanCount,
+			&r.TotalCostUSD, &r.TotalTokens, &r.StartNs, &r.LastSeenNs, &r.DurationMs,
+			&r.ActionCompletion, &r.AgentEfficiency, &r.ConvQuality, &r.UserIntentChange,
+			&r.EvalReasoning, &r.EvalAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (b *SQLiteBackend) QuerySession(ctx context.Context, sessionID string) (*SessionRow, error) {
+	var r SessionRow
+	err := b.db.QueryRowContext(ctx, `
+		SELECT session_id, entity_id, trace_count, span_count,
+		       total_cost_usd, total_tokens, start_ns, last_seen_ns, duration_ms,
+		       action_completion, agent_efficiency, conv_quality, user_intent_change,
+		       eval_reasoning, eval_at
+		FROM sessions WHERE session_id = ?`, sessionID).Scan(
+		&r.SessionID, &r.EntityID, &r.TraceCount, &r.SpanCount,
+		&r.TotalCostUSD, &r.TotalTokens, &r.StartNs, &r.LastSeenNs, &r.DurationMs,
+		&r.ActionCompletion, &r.AgentEfficiency, &r.ConvQuality, &r.UserIntentChange,
+		&r.EvalReasoning, &r.EvalAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 func timeRange(col string, from, to int64) (string, []any) {

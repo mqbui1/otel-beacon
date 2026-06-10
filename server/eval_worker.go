@@ -19,6 +19,196 @@ import (
 	"github.com/yourorg/otel-backend/storage"
 )
 
+// StartSessionEvalWorker drains the SessionEvalCh from the store and runs
+// session-level LLM-as-judge evaluation asynchronously via Bedrock.
+// Call this once from main after store.Init().
+func StartSessionEvalWorker(ctx context.Context, store *storage.Storage, logger *zap.Logger) {
+	go func() {
+		region := os.Getenv("AWS_REGION")
+		if region == "" {
+			region = "us-west-2"
+		}
+		cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+		if err != nil {
+			logger.Warn("session eval worker: cannot load AWS config — disabled", zap.Error(err))
+			for range store.SessionEvalCh() {
+			}
+			return
+		}
+		client := bedrockruntime.NewFromConfig(cfg)
+		modelID := os.Getenv("BEDROCK_MODEL_ID")
+		if modelID == "" {
+			modelID = "arn:aws:bedrock:us-west-2:387769110234:application-inference-profile/fky19kpnw2m7"
+		}
+		logger.Info("session eval worker started", zap.String("model", modelID))
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case sess, ok := <-store.SessionEvalCh():
+				if !ok {
+					return
+				}
+				// Load the spans for this session to build a transcript.
+				spans, _ := store.QueryGenAISpans(ctx, storage.GenAIQuery{
+					SessionID: sess.SessionID,
+					Limit:     200,
+				})
+				result, err := evaluateSession(ctx, client, modelID, sess, spans)
+				if err != nil {
+					logger.Debug("session eval: using heuristic",
+						zap.String("session_id", sess.SessionID), zap.Error(err))
+					result = heuristicSessionEval(sess, spans)
+				}
+				if err := store.FlushSessionEval(ctx, result); err != nil {
+					logger.Debug("session eval: flush failed", zap.Error(err))
+				}
+			}
+		}
+	}()
+}
+
+func evaluateSession(ctx context.Context, client *bedrockruntime.Client, modelID string, sess storage.SessionRow, spans []storage.GenAISpanRow) (storage.SessionRow, error) {
+	transcript := buildSessionTranscript(sess, spans)
+
+	evalPrompt := fmt.Sprintf(`You are evaluating a multi-step AI agent session. Score on four dimensions.
+
+Session Transcript:
+%s
+
+Return ONLY a valid JSON object (no markdown, no explanation):
+{
+  "action_completion":  <float 0-1, did the agent successfully complete all user goals?>,
+  "agent_efficiency":   <float 0-1, did the agent take an efficient path with minimal redundancy?>,
+  "conv_quality":       <float 0-1, overall quality and apparent user satisfaction>,
+  "user_intent_change": <float 0-1, did the user's primary goal shift significantly during the session?>,
+  "reasoning": "<one sentence>"
+}`, transcript)
+
+	reqBody, _ := json.Marshal(map[string]any{
+		"anthropic_version": "bedrock-2023-05-31",
+		"max_tokens":        300,
+		"messages":          []map[string]string{{"role": "user", "content": evalPrompt}},
+	})
+
+	evalCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	resp, err := client.InvokeModel(evalCtx, &bedrockruntime.InvokeModelInput{
+		ModelId:     aws.String(modelID),
+		ContentType: aws.String("application/json"),
+		Body:        reqBody,
+	})
+	if err != nil {
+		return storage.SessionRow{}, fmt.Errorf("bedrock invoke: %w", err)
+	}
+
+	var out struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(resp.Body, &out); err != nil || len(out.Content) == 0 {
+		return storage.SessionRow{}, fmt.Errorf("parse response: %w", err)
+	}
+
+	var scores struct {
+		ActionCompletion  float64 `json:"action_completion"`
+		AgentEfficiency   float64 `json:"agent_efficiency"`
+		ConvQuality       float64 `json:"conv_quality"`
+		UserIntentChange  float64 `json:"user_intent_change"`
+		Reasoning         string  `json:"reasoning"`
+	}
+	if err := json.Unmarshal([]byte(out.Content[0].Text), &scores); err != nil {
+		return storage.SessionRow{}, fmt.Errorf("parse scores: %w", err)
+	}
+
+	clamp := func(v float64) float64 {
+		if v < 0 { return 0 }
+		if v > 1 { return 1 }
+		return v
+	}
+	sess.ActionCompletion = clamp(scores.ActionCompletion)
+	sess.AgentEfficiency  = clamp(scores.AgentEfficiency)
+	sess.ConvQuality      = clamp(scores.ConvQuality)
+	sess.UserIntentChange = clamp(scores.UserIntentChange)
+	sess.EvalReasoning    = scores.Reasoning
+	sess.EvalAt           = time.Now().UnixNano()
+	return sess, nil
+}
+
+// buildSessionTranscript assembles a readable transcript from session spans.
+func buildSessionTranscript(sess storage.SessionRow, spans []storage.GenAISpanRow) string {
+	if len(spans) == 0 {
+		return fmt.Sprintf("Session %s: no spans recorded.", sess.SessionID)
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Session: %s | Traces: %d | Spans: %d | Cost: $%.4f\n\n",
+		sess.SessionID[:min(16, len(sess.SessionID))], sess.TraceCount, sess.SpanCount, sess.TotalCostUSD)
+
+	// Group spans by trace, preserving insertion order.
+	traceOrder := make([]string, 0)
+	traceSpans := make(map[string][]storage.GenAISpanRow)
+	for _, sp := range spans {
+		if _, seen := traceSpans[sp.TraceID]; !seen {
+			traceOrder = append(traceOrder, sp.TraceID)
+		}
+		traceSpans[sp.TraceID] = append(traceSpans[sp.TraceID], sp)
+	}
+
+	for i, tid := range traceOrder {
+		fmt.Fprintf(&sb, "[Trace %d — %s]\n", i+1, tid[:min(16, len(tid))])
+		for _, sp := range traceSpans[tid] {
+			agent := sp.AgentName
+			if agent == "" { agent = sp.Operation }
+			if agent == "" { agent = "llm" }
+			prompt := truncate(sp.Prompt, 300)
+			completion := truncate(sp.Completion, 300)
+			if prompt != "" || completion != "" {
+				fmt.Fprintf(&sb, "  [%s] P: %s\n        C: %s\n", agent, prompt, completion)
+			}
+		}
+		sb.WriteByte('\n')
+	}
+	return sb.String()
+}
+
+func min(a, b int) int {
+	if a < b { return a }
+	return b
+}
+
+// heuristicSessionEval scores a session without an LLM.
+func heuristicSessionEval(sess storage.SessionRow, spans []storage.GenAISpanRow) storage.SessionRow {
+	// Action completion: fraction of spans without errors.
+	errorCount := 0
+	for _, sp := range spans {
+		if sp.StatusCode == 2 { // ERROR
+			errorCount++
+		}
+	}
+	actionCompletion := 1.0
+	if len(spans) > 0 {
+		actionCompletion = 1.0 - float64(errorCount)/float64(len(spans))
+	}
+
+	// Agent efficiency: inversely proportional to span count (more spans = less efficient).
+	// Assume 5 spans is ideal (coordinator + 4 specialists), penalise beyond 20.
+	agentEfficiency := math.Max(0.2, 1.0-math.Max(0, float64(sess.SpanCount)-5)/30.0)
+
+	// Conversation quality: proxy via action completion and efficiency.
+	convQuality := (actionCompletion + agentEfficiency) / 2.0
+
+	sess.ActionCompletion = math.Min(1.0, actionCompletion)
+	sess.AgentEfficiency  = math.Min(1.0, agentEfficiency)
+	sess.ConvQuality      = math.Min(1.0, convQuality)
+	sess.UserIntentChange = 0.1
+	sess.EvalReasoning    = "Heuristic session eval: scored by error rate, span count, and efficiency proxy."
+	sess.EvalAt           = time.Now().UnixNano()
+	return sess
+}
+
 // StartEvalWorker drains the GenAIEvalCh from the store and runs LLM-as-judge
 // evaluation asynchronously via Bedrock. Results are written back via FlushEvalResults.
 // Call this once from main after store.Init().

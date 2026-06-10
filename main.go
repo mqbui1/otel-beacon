@@ -64,11 +64,12 @@ func main() {
 		log.Fatalf("storage init: %v", err)
 	}
 
-	// Start async LLM-as-judge evaluation worker (uses Bedrock; gracefully
-	// degrades to no-op if AWS credentials are unavailable).
+	// Start async LLM-as-judge evaluation workers (use Bedrock; gracefully
+	// degrade to heuristics if AWS credentials are unavailable).
 	evalCtx, evalCancel := context.WithCancel(context.Background())
 	defer evalCancel()
 	server.StartEvalWorker(evalCtx, store, logger)
+	server.StartSessionEvalWorker(evalCtx, store, logger)
 
 	// ---------------------------------------------------------------------------
 	// TLS (optional — set TLS_CERT_FILE and TLS_KEY_FILE to enable)

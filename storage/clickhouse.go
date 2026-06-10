@@ -519,3 +519,13 @@ func (b *ClickHouseBackend) QueryEvalResults(_ context.Context, _ string, _ int)
 func (b *ClickHouseBackend) QueryGuardrailEvents(_ context.Context, _ string, _ int) ([]GuardrailEventRow, error) {
 	return nil, nil
 }
+func (b *ClickHouseBackend) FlushSessions(_ context.Context, _ []string) ([]SessionRow, error) {
+	return nil, nil
+}
+func (b *ClickHouseBackend) FlushSessionEval(_ context.Context, _ SessionRow) error { return nil }
+func (b *ClickHouseBackend) QuerySessions(_ context.Context, _ string, _ int) ([]SessionRow, error) {
+	return nil, nil
+}
+func (b *ClickHouseBackend) QuerySession(_ context.Context, _ string) (*SessionRow, error) {
+	return nil, nil
+}

@@ -34,6 +34,7 @@ import random
 import sys
 import time
 import traceback
+import uuid
 from typing import Optional
 
 # ---------------------------------------------------------------------------
@@ -286,7 +287,7 @@ def call_agent(agent: str, prompt: str, parent_ctx) -> tuple[str, int, int]:
 # Main planning workflow
 # ---------------------------------------------------------------------------
 
-def plan_trip(query: str) -> dict:
+def plan_trip(query: str, session_id: str = None) -> dict:
     """
     Run the multi-agent travel planning workflow.
     Returns a dict with the final plan and metadata.
@@ -294,17 +295,21 @@ def plan_trip(query: str) -> dict:
     poison = inject_poison()
     full_query = query + poison
 
+    attrs = {
+        "gen_ai.system": "aws.bedrock" if _bedrock else "simulator",
+        "gen_ai.operation.name": "agent",
+        "gen_ai.agent.name": "coordinator",
+        "gen_ai.request.model": AGENT_MODELS["coordinator"],
+        "user.query": query,
+        "workflow.agents": "coordinator,flight_specialist,hotel_specialist,activity_specialist,plan_synthesizer",
+    }
+    if session_id:
+        attrs["session.id"] = session_id
+
     with tracer.start_as_current_span(
         "travel-planner.plan",
         kind=SpanKind.SERVER,
-        attributes={
-            "gen_ai.system": "aws.bedrock" if _bedrock else "simulator",
-            "gen_ai.operation.name": "agent",
-            "gen_ai.agent.name": "coordinator",
-            "gen_ai.request.model": AGENT_MODELS["coordinator"],
-            "user.query": query,
-            "workflow.agents": "coordinator,flight_specialist,hotel_specialist,activity_specialist,plan_synthesizer",
-        }
+        attributes=attrs,
     ) as root_span:
 
         root_ctx = trace.set_span_in_context(root_span)
@@ -379,16 +384,31 @@ QUERIES = [
     "Budget city break: Amsterdam from NYC, long weekend",
 ]
 
+SESSION_SIZE = random.randint(3, 5)  # trips per session (randomised at startup)
+
 def run_loadgen(delay: float = 15.0):
     print(f"Starting load generator (delay={delay}s, endpoint={ENDPOINT})", flush=True)
     count = 0
+    session_id = str(uuid.uuid4())
+    session_trip_count = 0
+    session_size = random.randint(3, 5)
+    print(f"  Session: {session_id[:16]}… ({session_size} trips)", flush=True)
+
     while True:
+        # Roll to a new session after session_size trips.
+        if session_trip_count >= session_size:
+            session_id = str(uuid.uuid4())
+            session_trip_count = 0
+            session_size = random.randint(3, 5)
+            print(f"\n  New session: {session_id[:16]}… ({session_size} trips)", flush=True)
+
         query = random.choice(QUERIES)
         count += 1
-        print(f"\n[{count}] Query: {query}", flush=True)
+        session_trip_count += 1
+        print(f"\n[{count}] Session {session_id[:8]}… trip {session_trip_count}/{session_size}: {query}", flush=True)
         t0 = time.time()
         try:
-            result = plan_trip(query)
+            result = plan_trip(query, session_id=session_id)
             elapsed = time.time() - t0
             print(
                 f"    OK in {elapsed:.1f}s | "

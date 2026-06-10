@@ -182,6 +182,11 @@ type Backend interface {
 	QueryGenAICosts(ctx context.Context, from, to int64, groupBy string) ([]GenAICostSummary, error)
 	QueryEvalResults(ctx context.Context, traceID string, limit int) ([]EvalResultRow, error)
 	QueryGuardrailEvents(ctx context.Context, traceID string, limit int) ([]GuardrailEventRow, error)
+	// Sessions
+	FlushSessions(ctx context.Context, sessionIDs []string) ([]SessionRow, error)
+	FlushSessionEval(ctx context.Context, sess SessionRow) error
+	QuerySessions(ctx context.Context, entityID string, limit int) ([]SessionRow, error)
+	QuerySession(ctx context.Context, sessionID string) (*SessionRow, error)
 
 	Close() error
 }
