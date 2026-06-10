@@ -443,6 +443,18 @@
     }
     .genai-empty-icon { font-size: 40px; opacity: .35; }
 
+    /* Agent flow map */
+    .fm-section { padding: 12px 16px 14px; border-bottom: 1px solid var(--border); }
+    .fm-section-hdr {
+      font-size: 10px; font-weight: 600; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .08em; margin-bottom: 10px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .fm-section-hdr::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+    .fm-wrap { overflow-x: auto; }
+    .fm-node-rect { transition: filter .15s; }
+    .fm-node:hover .fm-node-rect { filter: brightness(1.25); }
+
     /* Agent workflow waterfall rows */
     .ai-wf-row {
       display: flex; align-items: stretch; min-height: 38px;
@@ -3181,11 +3193,130 @@ async function openGenAITrace(traceId) {
     ${guardCount > 0 ? `<span style="color:var(--red)">🛡️ <strong>${guardCount}</strong> guardrail alert${guardCount!==1?'s':''}</span>` : ''}
   `;
 
+  // Inject two-section layout: flow map on top, waterfall below
+  el.innerHTML = `
+    <div class="fm-section">
+      <div class="fm-section-hdr">Agent Flow Map</div>
+      <div class="fm-wrap" id="g-flow-map"></div>
+    </div>
+    <div id="g-waterfall-rows"></div>
+  `;
+  document.getElementById('g-flow-map').innerHTML = renderAgentFlowMap(spans, evalMap, guardMap);
   renderGenAIWaterfall(spans, evalMap, guardMap, startNs, endNs);
 }
 
+function renderAgentFlowMap(spans, evalMap, guardMap) {
+  if (!spans.length) return '';
+
+  // Build tree from parent_span_id
+  const byId = {};
+  spans.forEach(s => { byId[s.span_id] = s; });
+
+  const childrenOf = {};
+  spans.forEach(s => {
+    if (s.parent_span_id && byId[s.parent_span_id]) {
+      (childrenOf[s.parent_span_id] = childrenOf[s.parent_span_id] || []).push(s.span_id);
+    }
+  });
+
+  // BFS depth assignment from roots
+  const depthOf = {};
+  const roots = spans.filter(s => !(s.parent_span_id && byId[s.parent_span_id]));
+  const queue = roots.map(r => { depthOf[r.span_id] = 0; return r.span_id; });
+  let qi = 0;
+  while (qi < queue.length) {
+    const id = queue[qi++];
+    (childrenOf[id] || []).forEach(cid => {
+      depthOf[cid] = (depthOf[id] || 0) + 1;
+      queue.push(cid);
+    });
+  }
+
+  // Group spans by depth column, sorted by start_ns within column
+  const cols = {};
+  spans.forEach(s => {
+    const d = depthOf[s.span_id] || 0;
+    (cols[d] = cols[d] || []).push(s);
+  });
+  Object.values(cols).forEach(col => col.sort((a, b) => (a.start_ns || 0) - (b.start_ns || 0)));
+
+  // Layout constants
+  const NW = 162, NH = 78, COL_GAP = 76, ROW_GAP = 10, PAD = 20;
+  const numCols = Math.max(...Object.keys(cols).map(Number)) + 1;
+
+  const colH = d => { const n = (cols[d] || []).length; return n * NH + Math.max(0, n - 1) * ROW_GAP; };
+  const maxColH = Math.max(...Object.keys(cols).map(d => colH(Number(d))));
+  const svgH = maxColH + PAD * 2;
+  const svgW = numCols * NW + (numCols - 1) * COL_GAP + PAD * 2;
+
+  // Pixel positions — columns centered vertically
+  const pos = {};
+  Object.entries(cols).forEach(([d, col]) => {
+    const startY = PAD + (maxColH - colH(Number(d))) / 2;
+    col.forEach((s, i) => {
+      pos[s.span_id] = { x: PAD + Number(d) * (NW + COL_GAP), y: startY + i * (NH + ROW_GAP) };
+    });
+  });
+
+  let edges = '', nodes = '';
+
+  // Edges (drawn behind nodes)
+  spans.forEach(s => {
+    const pid = s.parent_span_id;
+    if (!(pid && pos[pid] && pos[s.span_id])) return;
+    const x1 = pos[pid].x + NW, y1 = pos[pid].y + NH / 2;
+    const x2 = pos[s.span_id].x,  y2 = pos[s.span_id].y + NH / 2;
+    const cx = x1 + (x2 - x1) * 0.55;
+    edges += `<path d="M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}"
+      fill="none" stroke="rgba(255,255,255,.15)" stroke-width="1.5" marker-end="url(#fm-arr)"/>`;
+  });
+
+  // Nodes
+  spans.forEach(s => {
+    const p = pos[s.span_id]; if (!p) return;
+    const color  = agentColor(s.agent_name || '');
+    const ev     = evalMap[s.span_id];
+    const guards = guardMap[s.span_id] || [];
+    const hasGuard = guards.some(g => g.triggered);
+    const score  = ev ? ev.overall_score : null;
+    const sc = score == null ? null : score >= 0.8 ? '#4ecfb3' : score >= 0.6 ? '#e0c97a' : '#e05c6b';
+    const label  = (s.agent_name || s.operation || 'llm').slice(0, 18);
+    // onclick: scroll waterfall row into view and expand it
+    const onclick = `(()=>{const r=document.getElementById('wf-row-${s.span_id}');if(r){r.scrollIntoView({behavior:'smooth',block:'center'});if(!r.classList.contains('expanded'))r.click();}})()`;
+
+    nodes += `
+    <g class="fm-node" onclick="${onclick}" style="cursor:pointer" role="button">
+      <rect class="fm-node-rect" x="${p.x}" y="${p.y}" width="${NW}" height="${NH}" rx="7"
+        fill="rgba(22,26,36,0.97)" stroke="${color}" stroke-width="1.5"/>
+      <rect x="${p.x}" y="${p.y}" width="4" height="${NH}" rx="2" fill="${color}" rx="2"/>
+      <text x="${p.x+13}" y="${p.y+19}" font-size="11" font-weight="700" fill="${color}"
+        font-family="'Cascadia Code','SF Mono',monospace">${esc(label)}</text>
+      <text x="${p.x+13}" y="${p.y+32}" font-size="9.5" fill="rgba(255,255,255,.4)">${esc((s.model||'').slice(0,22))}</text>
+      <line x1="${p.x+13}" y1="${p.y+39}" x2="${p.x+NW-12}" y2="${p.y+39}" stroke="rgba(255,255,255,.06)" stroke-width="1"/>
+      <text x="${p.x+13}" y="${p.y+52}" font-size="9" fill="rgba(255,255,255,.5)">⏱ ${esc(fmtDur(s.duration_ms))}</text>
+      <text x="${p.x+13}" y="${p.y+65}" font-size="9" fill="rgba(160,160,220,.65)">💰 ${esc(fmtCost(s.total_cost_usd))} · ${s.input_tokens||0}→${s.output_tokens||0} tok</text>
+      ${sc != null ? `
+        <rect x="${p.x+NW-40}" y="${p.y+7}" width="32" height="16}" rx="4"
+          fill="${sc}22" stroke="${sc}" stroke-width="0.8" rx="4"/>
+        <text x="${p.x+NW-24}" y="${p.y+18}" font-size="9.5" fill="${sc}" text-anchor="middle" font-weight="600">${(score*100).toFixed(0)}%</text>
+      ` : ''}
+      ${hasGuard ? `<text x="${p.x+NW-9}" y="${p.y+NH-7}" font-size="11" text-anchor="end">🛡️</text>` : ''}
+    </g>`;
+  });
+
+  return `<svg viewBox="0 0 ${svgW} ${svgH}" style="width:100%;min-width:${svgW}px;height:${svgH}px;display:block" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="fm-arr" markerWidth="7" markerHeight="7" refX="5" refY="3.5" orient="auto">
+        <path d="M0,1 L6,3.5 L0,6 Z" fill="rgba(255,255,255,.22)"/>
+      </marker>
+    </defs>
+    ${edges}
+    ${nodes}
+  </svg>`;
+}
+
 function renderGenAIWaterfall(spans, evalMap, guardMap, traceStartNs, traceEndNs) {
-  const el = document.getElementById('g-waterfall-body');
+  const el = document.getElementById('g-waterfall-rows') || document.getElementById('g-waterfall-body');
   const totalMs = Math.max((traceEndNs - traceStartNs) / 1e6, 1);
 
   // Build tree
