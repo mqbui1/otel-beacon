@@ -20,27 +20,35 @@ import (
 )
 
 // StartSessionEvalWorker drains the SessionEvalCh from the store and runs
-// session-level LLM-as-judge evaluation asynchronously via Bedrock.
+// session-level LLM-as-judge evaluation asynchronously.
+// Backend selection: EVAL_BACKEND=ollama|heuristic|bedrock (default bedrock).
 // Call this once from main after store.Init().
 func StartSessionEvalWorker(ctx context.Context, store *storage.Storage, logger *zap.Logger) {
 	go func() {
-		region := os.Getenv("AWS_REGION")
-		if region == "" {
-			region = "us-west-2"
-		}
-		cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
-		if err != nil {
-			logger.Warn("session eval worker: cannot load AWS config — disabled", zap.Error(err))
-			for range store.SessionEvalCh() {
+		backend := os.Getenv("EVAL_BACKEND")
+
+		var client *bedrockruntime.Client
+		var modelID string
+
+		if backend != "ollama" && backend != "heuristic" {
+			region := os.Getenv("AWS_REGION")
+			if region == "" {
+				region = "us-west-2"
 			}
-			return
+			cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+			if err != nil {
+				logger.Warn("session eval worker: cannot load AWS config — using heuristic", zap.Error(err))
+				backend = "heuristic"
+			} else {
+				client = bedrockruntime.NewFromConfig(cfg)
+				modelID = os.Getenv("BEDROCK_MODEL_ID")
+				if modelID == "" {
+					modelID = "arn:aws:bedrock:us-west-2:387769110234:application-inference-profile/fky19kpnw2m7"
+				}
+				backend = "bedrock"
+			}
 		}
-		client := bedrockruntime.NewFromConfig(cfg)
-		modelID := os.Getenv("BEDROCK_MODEL_ID")
-		if modelID == "" {
-			modelID = "arn:aws:bedrock:us-west-2:387769110234:application-inference-profile/fky19kpnw2m7"
-		}
-		logger.Info("session eval worker started", zap.String("model", modelID))
+		logger.Info("session eval worker started", zap.String("backend", backend))
 
 		for {
 			select {
@@ -50,15 +58,24 @@ func StartSessionEvalWorker(ctx context.Context, store *storage.Storage, logger 
 				if !ok {
 					return
 				}
-				// Load the spans for this session to build a transcript.
 				spans, _ := store.QueryGenAISpans(ctx, storage.GenAIQuery{
 					SessionID: sess.SessionID,
 					Limit:     200,
 				})
-				result, err := evaluateSession(ctx, client, modelID, sess, spans)
-				if err != nil {
-					logger.Debug("session eval: using heuristic",
-						zap.String("session_id", sess.SessionID), zap.Error(err))
+
+				var result storage.SessionRow
+				var err error
+				switch backend {
+				case "ollama":
+					result, err = callOllamaForSession(ctx, sess, spans)
+				case "bedrock":
+					result, err = evaluateSession(ctx, client, modelID, sess, spans)
+				}
+				if backend == "heuristic" || err != nil {
+					if err != nil {
+						logger.Debug("session eval: primary failed, using heuristic",
+							zap.String("session_id", sess.SessionID), zap.Error(err))
+					}
 					result = heuristicSessionEval(sess, spans)
 				}
 				if err := store.FlushSessionEval(ctx, result); err != nil {
@@ -210,31 +227,35 @@ func heuristicSessionEval(sess storage.SessionRow, spans []storage.GenAISpanRow)
 }
 
 // StartEvalWorker drains the GenAIEvalCh from the store and runs LLM-as-judge
-// evaluation asynchronously via Bedrock. Results are written back via FlushEvalResults.
+// evaluation asynchronously. Results are written back via FlushEvalResults.
+// Backend selection: EVAL_BACKEND=ollama|heuristic|bedrock (default bedrock).
 // Call this once from main after store.Init().
 func StartEvalWorker(ctx context.Context, store *storage.Storage, logger *zap.Logger) {
 	go func() {
-		// Build Bedrock client once; reuse across all evaluations.
-		region := os.Getenv("AWS_REGION")
-		if region == "" {
-			region = "us-west-2"
-		}
-		cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
-		if err != nil {
-			logger.Warn("eval worker: cannot load AWS config — LLM-as-judge disabled",
-				zap.Error(err))
-			// Drain the channel silently so it doesn't fill up.
-			for range store.GenAIEvalCh() {
-			}
-			return
-		}
-		client := bedrockruntime.NewFromConfig(cfg)
-		modelID := os.Getenv("BEDROCK_MODEL_ID")
-		if modelID == "" {
-			modelID = "arn:aws:bedrock:us-west-2:387769110234:application-inference-profile/fky19kpnw2m7"
-		}
+		backend := os.Getenv("EVAL_BACKEND")
 
-		logger.Info("eval worker started", zap.String("model", modelID))
+		var client *bedrockruntime.Client
+		var modelID string
+
+		if backend != "ollama" && backend != "heuristic" {
+			region := os.Getenv("AWS_REGION")
+			if region == "" {
+				region = "us-west-2"
+			}
+			cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+			if err != nil {
+				logger.Warn("eval worker: cannot load AWS config — using heuristic", zap.Error(err))
+				backend = "heuristic"
+			} else {
+				client = bedrockruntime.NewFromConfig(cfg)
+				modelID = os.Getenv("BEDROCK_MODEL_ID")
+				if modelID == "" {
+					modelID = "arn:aws:bedrock:us-west-2:387769110234:application-inference-profile/fky19kpnw2m7"
+				}
+				backend = "bedrock"
+			}
+		}
+		logger.Info("eval worker started", zap.String("backend", backend))
 
 		for {
 			select {
@@ -244,10 +265,19 @@ func StartEvalWorker(ctx context.Context, store *storage.Storage, logger *zap.Lo
 				if !ok {
 					return
 				}
-				result, err := evaluateSpan(ctx, client, modelID, gs)
-				if err != nil {
-					logger.Debug("eval worker: Bedrock unavailable, using heuristic eval",
-						zap.String("span_id", gs.SpanID), zap.Error(err))
+				var result storage.EvalResultRow
+				var err error
+				switch backend {
+				case "ollama":
+					result, err = callOllamaForSpan(ctx, gs)
+				case "bedrock":
+					result, err = evaluateSpan(ctx, client, modelID, gs)
+				}
+				if backend == "heuristic" || err != nil {
+					if err != nil {
+						logger.Debug("eval worker: primary failed, using heuristic",
+							zap.String("span_id", gs.SpanID), zap.Error(err))
+					}
 					result = heuristicEval(gs)
 				}
 				if err := store.FlushEvalResults(ctx, []storage.EvalResultRow{result}); err != nil {

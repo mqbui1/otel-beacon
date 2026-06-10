@@ -35,20 +35,26 @@ func (w *ExperimentWorker) Enqueue(exp storage.ExperimentRow) {
 // StartExperimentWorker drains the experiment queue and runs batch LLM-as-judge eval.
 func StartExperimentWorker(ctx context.Context, w *ExperimentWorker, store *storage.Storage, logger *zap.Logger) {
 	go func() {
-		region := os.Getenv("AWS_REGION")
-		if region == "" {
-			region = "us-west-2"
-		}
-		cfg, err := awscfg.LoadDefaultConfig(ctx, awscfg.WithRegion(region))
+		backend := os.Getenv("EVAL_BACKEND")
+
 		var client *bedrockruntime.Client
-		if err == nil {
-			client = bedrockruntime.NewFromConfig(cfg)
+		var modelID string
+
+		if backend != "ollama" && backend != "heuristic" {
+			region := os.Getenv("AWS_REGION")
+			if region == "" {
+				region = "us-west-2"
+			}
+			cfg, err := awscfg.LoadDefaultConfig(ctx, awscfg.WithRegion(region))
+			if err == nil {
+				client = bedrockruntime.NewFromConfig(cfg)
+				modelID = os.Getenv("BEDROCK_MODEL_ID")
+				if modelID == "" {
+					modelID = "arn:aws:bedrock:us-west-2:387769110234:application-inference-profile/fky19kpnw2m7"
+				}
+			}
 		}
-		modelID := os.Getenv("BEDROCK_MODEL_ID")
-		if modelID == "" {
-			modelID = "arn:aws:bedrock:us-west-2:387769110234:application-inference-profile/fky19kpnw2m7"
-		}
-		logger.Info("experiment worker started", zap.String("model", modelID))
+		logger.Info("experiment worker started", zap.String("backend", backend))
 
 		for {
 			select {
@@ -130,11 +136,15 @@ func evalDatasetRow(ctx context.Context, client *bedrockruntime.Client, modelID,
 		RowID:        row.RowID,
 	}
 
-	if client == nil {
+	var scores rowScores
+	var err error
+	if ollamaEnabled() {
+		scores, err = callOllamaForRow(ctx, row.Prompt, row.Completion)
+	} else if client != nil {
+		scores, err = callBedrockForRow(ctx, client, modelID, row.Prompt, row.Completion)
+	} else {
 		return heuristicDatasetRow(row, result)
 	}
-
-	scores, err := callBedrockForRow(ctx, client, modelID, row.Prompt, row.Completion)
 	if err != nil {
 		return heuristicDatasetRow(row, result)
 	}
