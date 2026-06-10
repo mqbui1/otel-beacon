@@ -529,3 +529,28 @@ func (b *ClickHouseBackend) QuerySessions(_ context.Context, _ string, _ int) ([
 func (b *ClickHouseBackend) QuerySession(_ context.Context, _ string) (*SessionRow, error) {
 	return nil, nil
 }
+
+// Datasets + Experiments — no-op stubs for ClickHouse.
+func (b *ClickHouseBackend) CreateDataset(_ context.Context, _ DatasetMeta, _ []DatasetRow) error {
+	return nil
+}
+func (b *ClickHouseBackend) ListDatasets(_ context.Context, _ string, _ int) ([]DatasetMeta, error) {
+	return nil, nil
+}
+func (b *ClickHouseBackend) GetDataset(_ context.Context, _ string) (*DatasetMeta, []DatasetRow, error) {
+	return nil, nil, nil
+}
+func (b *ClickHouseBackend) CreateExperiment(_ context.Context, _ ExperimentRow) error { return nil }
+func (b *ClickHouseBackend) ListExperiments(_ context.Context, _ string, _ int) ([]ExperimentRow, error) {
+	return nil, nil
+}
+func (b *ClickHouseBackend) GetExperiment(_ context.Context, _ string) (*ExperimentRow, error) {
+	return nil, nil
+}
+func (b *ClickHouseBackend) SaveExperimentResult(_ context.Context, _ ExperimentResult) error {
+	return nil
+}
+func (b *ClickHouseBackend) FinalizeExperiment(_ context.Context, _ ExperimentRow) error { return nil }
+func (b *ClickHouseBackend) GetExperimentResults(_ context.Context, _ string) ([]ExperimentResult, error) {
+	return nil, nil
+}

@@ -2,8 +2,10 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -11,8 +13,8 @@ import (
 )
 
 // registerGenAIRoutes wires up all /v1/genai/* handlers onto the provided mux.
-func registerGenAIRoutes(mux *http.ServeMux, store *storage.Storage, logger *zap.Logger) {
-	g := &genaiServer{store: store, logger: logger}
+func registerGenAIRoutes(mux *http.ServeMux, store *storage.Storage, ew *ExperimentWorker, logger *zap.Logger) {
+	g := &genaiServer{store: store, ew: ew, logger: logger}
 	mux.HandleFunc("/v1/genai/spans", g.spans)
 	mux.HandleFunc("/v1/genai/agents", g.agents)
 	mux.HandleFunc("/v1/genai/costs", g.costs)
@@ -20,12 +22,17 @@ func registerGenAIRoutes(mux *http.ServeMux, store *storage.Storage, logger *zap
 	mux.HandleFunc("/v1/genai/guardrails", g.guardrailEvents)
 	mux.HandleFunc("/v1/genai/guardrails/check", g.guardrailCheck)
 	mux.HandleFunc("/v1/genai/trace/", g.traceWaterfall)   // /v1/genai/trace/{trace_id}
-	mux.HandleFunc("/v1/genai/sessions", g.sessions)       // GET /v1/genai/sessions?entity=&limit=
-	mux.HandleFunc("/v1/genai/sessions/", g.sessionDetail) // GET /v1/genai/sessions/{session_id}
+	mux.HandleFunc("/v1/genai/sessions", g.sessions)        // GET /v1/genai/sessions?entity=&limit=
+	mux.HandleFunc("/v1/genai/sessions/", g.sessionDetail)  // GET /v1/genai/sessions/{session_id}
+	mux.HandleFunc("/v1/datasets", g.datasets)              // GET list / POST create
+	mux.HandleFunc("/v1/datasets/", g.datasetDetail)        // GET /v1/datasets/{id}
+	mux.HandleFunc("/v1/experiments", g.experiments)        // GET list / POST create
+	mux.HandleFunc("/v1/experiments/", g.experimentDetail)  // GET /v1/experiments/{id}
 }
 
 type genaiServer struct {
 	store  *storage.Storage
+	ew     *ExperimentWorker
 	logger *zap.Logger
 }
 
@@ -166,3 +173,174 @@ func (g *genaiServer) guardrailCheck(w http.ResponseWriter, r *http.Request) {
 	resp := storage.RunGuardrailCheck(req)
 	writeJSON(w, resp, nil, g.logger)
 }
+
+// ---------------------------------------------------------------------------
+// Datasets
+// ---------------------------------------------------------------------------
+
+// GET /v1/datasets?entity=&limit=   POST /v1/datasets
+func (g *genaiServer) datasets(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		g.createDataset(w, r)
+		return
+	}
+	entity := r.URL.Query().Get("entity")
+	lim := parseInt(r.URL.Query().Get("limit"))
+	rows, err := g.store.ListDatasets(r.Context(), entity, lim)
+	writeJSON(w, rows, err, g.logger)
+}
+
+// POST /v1/datasets body: {"name":"…","entity_id":"…","rows":[{"prompt":"…","completion":"…"},...]}
+func (g *genaiServer) createDataset(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name     string `json:"name"`
+		EntityID string `json:"entity_id"`
+		Rows     []struct {
+			Prompt     string `json:"prompt"`
+			Completion string `json:"completion"`
+			Context    string `json:"context"`
+			Expected   string `json:"expected"`
+		} `json:"rows"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Name == "" || len(req.Rows) == 0 {
+		http.Error(w, "name and rows are required", http.StatusBadRequest)
+		return
+	}
+	datasetID := fmt.Sprintf("ds-%d", time.Now().UnixNano())
+	meta := storage.DatasetMeta{
+		DatasetID: datasetID,
+		Name:      req.Name,
+		EntityID:  req.EntityID,
+		RowCount:  len(req.Rows),
+	}
+	rows := make([]storage.DatasetRow, len(req.Rows))
+	for i, rr := range req.Rows {
+		rows[i] = storage.DatasetRow{
+			RowID:      fmt.Sprintf("%s-r%d", datasetID, i),
+			DatasetID:  datasetID,
+			Prompt:     rr.Prompt,
+			Completion: rr.Completion,
+			Context:    rr.Context,
+			Expected:   rr.Expected,
+		}
+	}
+	if err := g.store.CreateDataset(r.Context(), meta, rows); err != nil {
+		writeJSON(w, nil, err, g.logger)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(meta)
+}
+
+// GET /v1/datasets/{id}
+func (g *genaiServer) datasetDetail(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/v1/datasets/")
+	if id == "" {
+		http.Error(w, "missing dataset_id", http.StatusBadRequest)
+		return
+	}
+	meta, rows, err := g.store.GetDataset(r.Context(), id)
+	if err != nil {
+		writeJSON(w, nil, err, g.logger)
+		return
+	}
+	if meta == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"dataset": meta, "rows": rows})
+}
+
+// ---------------------------------------------------------------------------
+// Experiments
+// ---------------------------------------------------------------------------
+
+// GET /v1/experiments?entity=&limit=   POST /v1/experiments
+func (g *genaiServer) experiments(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		g.createExperiment(w, r)
+		return
+	}
+	entity := r.URL.Query().Get("entity")
+	lim := parseInt(r.URL.Query().Get("limit"))
+	rows, err := g.store.ListExperiments(r.Context(), entity, lim)
+	writeJSON(w, rows, err, g.logger)
+}
+
+// POST /v1/experiments body: {"name":"…","dataset_id":"…","entity_id":"…"}
+func (g *genaiServer) createExperiment(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name      string `json:"name"`
+		DatasetID string `json:"dataset_id"`
+		EntityID  string `json:"entity_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.DatasetID == "" {
+		http.Error(w, "dataset_id is required", http.StatusBadRequest)
+		return
+	}
+	if req.Name == "" {
+		req.Name = "Experiment " + req.DatasetID
+	}
+
+	// Look up dataset to get row count.
+	meta, _, err := g.store.GetDataset(r.Context(), req.DatasetID)
+	if err != nil || meta == nil {
+		http.Error(w, "dataset not found", http.StatusBadRequest)
+		return
+	}
+
+	exp := storage.ExperimentRow{
+		ExperimentID: fmt.Sprintf("exp-%d", time.Now().UnixNano()),
+		Name:         req.Name,
+		DatasetID:    req.DatasetID,
+		EntityID:     req.EntityID,
+		Status:       "pending",
+		RowCount:     meta.RowCount,
+	}
+	if err := g.store.CreateExperiment(r.Context(), exp); err != nil {
+		writeJSON(w, nil, err, g.logger)
+		return
+	}
+	if g.ew != nil {
+		g.ew.Enqueue(exp)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(exp)
+}
+
+// GET /v1/experiments/{id}
+func (g *genaiServer) experimentDetail(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/v1/experiments/")
+	if id == "" {
+		http.Error(w, "missing experiment_id", http.StatusBadRequest)
+		return
+	}
+	exp, err := g.store.GetExperiment(r.Context(), id)
+	if err != nil {
+		writeJSON(w, nil, err, g.logger)
+		return
+	}
+	if exp == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	results, err := g.store.GetExperimentResults(r.Context(), id)
+	if err != nil {
+		writeJSON(w, nil, err, g.logger)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"experiment": exp, "results": results})
+}
+

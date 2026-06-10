@@ -23,7 +23,7 @@ import (
 //	GET /v1/entities?type=service
 //	GET /v1/topology
 //	GET /v1/entity/signals?type=service&id=X
-func NewQueryServer(store *storage.Storage, logger *zap.Logger) http.Handler {
+func NewQueryServer(store *storage.Storage, ew *ExperimentWorker, logger *zap.Logger) http.Handler {
 	mux := http.NewServeMux()
 	s := &queryServer{store: store, logger: logger}
 	mux.HandleFunc("/v1/query/spans", s.spans)
@@ -38,7 +38,7 @@ func NewQueryServer(store *storage.Storage, logger *zap.Logger) http.Handler {
 	mux.HandleFunc("/v1/rca", s.rca)
 	mux.HandleFunc("/v1/incidents", s.incidents)
 	// GenAI observability routes
-	registerGenAIRoutes(mux, store, logger)
+	registerGenAIRoutes(mux, store, ew, logger)
 	return mux
 }
 

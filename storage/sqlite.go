@@ -987,4 +987,58 @@ CREATE INDEX IF NOT EXISTS idx_metrics_ts        ON metrics(timestamp_ns);
 CREATE INDEX IF NOT EXISTS idx_metrics_entity_id ON metrics(entity_id);
 CREATE INDEX IF NOT EXISTS idx_logs_ts           ON logs(timestamp_ns);
 CREATE INDEX IF NOT EXISTS idx_logs_entity_id    ON logs(entity_id);
+CREATE TABLE IF NOT EXISTS datasets (
+    dataset_id TEXT    PRIMARY KEY,
+    name       TEXT    NOT NULL DEFAULT '',
+    entity_id  TEXT    NOT NULL DEFAULT '',
+    row_count  INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER DEFAULT (unixepoch())
+);
+CREATE TABLE IF NOT EXISTS dataset_rows (
+    row_id     TEXT PRIMARY KEY,
+    dataset_id TEXT NOT NULL,
+    prompt     TEXT NOT NULL DEFAULT '',
+    completion TEXT NOT NULL DEFAULT '',
+    context    TEXT NOT NULL DEFAULT '',
+    expected   TEXT NOT NULL DEFAULT '',
+    created_at INTEGER DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_dataset_rows_dataset ON dataset_rows(dataset_id);
+CREATE TABLE IF NOT EXISTS experiments (
+    experiment_id             TEXT    PRIMARY KEY,
+    name                      TEXT    NOT NULL DEFAULT '',
+    dataset_id                TEXT    NOT NULL DEFAULT '',
+    entity_id                 TEXT    NOT NULL DEFAULT '',
+    status                    TEXT    NOT NULL DEFAULT 'pending',
+    row_count                 INTEGER NOT NULL DEFAULT 0,
+    scored_count              INTEGER NOT NULL DEFAULT 0,
+    avg_overall               REAL    NOT NULL DEFAULT 0,
+    avg_hallucination         REAL    NOT NULL DEFAULT 0,
+    avg_coherence             REAL    NOT NULL DEFAULT 0,
+    avg_relevance             REAL    NOT NULL DEFAULT 0,
+    avg_toxicity              REAL    NOT NULL DEFAULT 0,
+    avg_correctness           REAL    NOT NULL DEFAULT 0,
+    avg_instruction_adherence REAL    NOT NULL DEFAULT 0,
+    avg_reasoning_coherence   REAL    NOT NULL DEFAULT 0,
+    avg_completeness          REAL    NOT NULL DEFAULT 0,
+    created_at                INTEGER DEFAULT (unixepoch()),
+    completed_at              INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS experiment_results (
+    result_id             TEXT PRIMARY KEY,
+    experiment_id         TEXT NOT NULL,
+    row_id                TEXT NOT NULL,
+    overall_score         REAL NOT NULL DEFAULT 0,
+    hallucination         REAL NOT NULL DEFAULT 0,
+    coherence             REAL NOT NULL DEFAULT 0,
+    relevance             REAL NOT NULL DEFAULT 0,
+    toxicity              REAL NOT NULL DEFAULT 0,
+    correctness           REAL NOT NULL DEFAULT 0,
+    instruction_adherence REAL NOT NULL DEFAULT 0,
+    reasoning_coherence   REAL NOT NULL DEFAULT 0,
+    completeness          REAL NOT NULL DEFAULT 0,
+    eval_reasoning        TEXT NOT NULL DEFAULT '',
+    created_at            INTEGER DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_exp_results_exp ON experiment_results(experiment_id);
 `

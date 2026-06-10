@@ -188,5 +188,16 @@ type Backend interface {
 	QuerySessions(ctx context.Context, entityID string, limit int) ([]SessionRow, error)
 	QuerySession(ctx context.Context, sessionID string) (*SessionRow, error)
 
+	// Datasets + Experiments
+	CreateDataset(ctx context.Context, meta DatasetMeta, rows []DatasetRow) error
+	ListDatasets(ctx context.Context, entityID string, limit int) ([]DatasetMeta, error)
+	GetDataset(ctx context.Context, datasetID string) (*DatasetMeta, []DatasetRow, error)
+	CreateExperiment(ctx context.Context, exp ExperimentRow) error
+	ListExperiments(ctx context.Context, entityID string, limit int) ([]ExperimentRow, error)
+	GetExperiment(ctx context.Context, experimentID string) (*ExperimentRow, error)
+	SaveExperimentResult(ctx context.Context, r ExperimentResult) error
+	FinalizeExperiment(ctx context.Context, exp ExperimentRow) error
+	GetExperimentResults(ctx context.Context, experimentID string) ([]ExperimentResult, error)
+
 	Close() error
 }

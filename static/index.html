@@ -910,6 +910,7 @@
             <button class="genai-tab-btn active" onclick="switchGenAITab('agents',this)">Agents</button>
             <button class="genai-tab-btn" onclick="switchGenAITab('models',this)">Models</button>
             <button class="genai-tab-btn" onclick="switchGenAITab('sessions',this)">Sessions</button>
+            <button class="genai-tab-btn" onclick="switchGenAITab('experiments',this)">Experiments</button>
           </div>
         </div>
         <div class="genai-tab-pane active" id="g-pane-agents">
@@ -946,6 +947,66 @@
             </tr></thead>
             <tbody id="g-sessions-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
           </table>
+        </div>
+        <div class="genai-tab-pane" id="g-pane-experiments">
+          <!-- Create experiment form -->
+          <div style="padding:10px 12px;border-bottom:1px solid var(--border)">
+            <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">New Experiment</div>
+            <div style="display:flex;gap:6px;align-items:flex-end;flex-wrap:wrap">
+              <div style="flex:1;min-width:120px">
+                <div style="font-size:10px;color:var(--muted);margin-bottom:3px">Name</div>
+                <input id="exp-name" type="text" placeholder="e.g. haiku-vs-sonnet"
+                  style="width:100%;padding:4px 8px;font-size:11px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text);box-sizing:border-box">
+              </div>
+              <div style="flex:1;min-width:120px">
+                <div style="font-size:10px;color:var(--muted);margin-bottom:3px">Dataset</div>
+                <select id="exp-dataset"
+                  style="width:100%;padding:4px 8px;font-size:11px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text)">
+                  <option value="">— choose —</option>
+                </select>
+              </div>
+              <button onclick="submitExperiment()"
+                style="padding:5px 12px;font-size:11px;font-weight:600;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">
+                Run
+              </button>
+              <button onclick="showDatasetUpload()"
+                style="padding:5px 12px;font-size:11px;font-weight:600;background:transparent;color:var(--accent);border:1px solid var(--accent);border-radius:4px;cursor:pointer">
+                Upload Dataset
+              </button>
+            </div>
+            <!-- Dataset upload panel (hidden by default) -->
+            <div id="dataset-upload-panel" style="display:none;margin-top:10px">
+              <div style="font-size:10px;color:var(--muted);margin-bottom:3px">Paste JSON rows: [{"prompt":"…","completion":"…"}, …]</div>
+              <textarea id="dataset-rows-json" rows="4"
+                style="width:100%;padding:6px 8px;font-size:10px;font-family:monospace;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text);box-sizing:border-box;resize:vertical"
+                placeholder='[{"prompt":"What is 2+2?","completion":"4"},{"prompt":"Name a planet","completion":"Mars"}]'></textarea>
+              <div style="display:flex;gap:6px;margin-top:4px">
+                <input id="dataset-name" type="text" placeholder="Dataset name"
+                  style="flex:1;padding:4px 8px;font-size:11px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text)">
+                <button onclick="uploadDataset()"
+                  style="padding:5px 12px;font-size:11px;font-weight:600;background:var(--green);color:#fff;border:none;border-radius:4px;cursor:pointer">
+                  Save Dataset
+                </button>
+                <button onclick="document.getElementById('dataset-upload-panel').style.display='none'"
+                  style="padding:5px 10px;font-size:11px;background:transparent;color:var(--muted);border:1px solid var(--border);border-radius:4px;cursor:pointer">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+          <!-- Experiments list -->
+          <div id="g-experiments-list" style="max-height:320px;overflow-y:auto">
+            <div class="empty" style="padding:24px">No experiments yet.</div>
+          </div>
+          <!-- Per-experiment results (shown on click) -->
+          <div id="g-experiment-results" style="display:none;border-top:1px solid var(--border)">
+            <div style="padding:8px 12px;display:flex;justify-content:space-between;align-items:center">
+              <span style="font-size:11px;font-weight:600" id="g-exp-results-title">Results</span>
+              <button onclick="document.getElementById('g-experiment-results').style.display='none'"
+                style="font-size:10px;color:var(--muted);background:none;border:none;cursor:pointer">close ✕</button>
+            </div>
+            <div id="g-exp-results-body" style="max-height:280px;overflow-y:auto"></div>
+          </div>
         </div>
       </div>
 
@@ -1105,9 +1166,10 @@ function svcLabel(resourceAttrsJson) {
   } catch { return '—'; }
 }
 
-async function api(path) {
+async function api(path, opts) {
   try {
-    const r = await fetch(path);
+    const fetchOpts = opts ? {headers:{'Content-Type':'application/json'}, ...opts} : undefined;
+    const r = await fetch(path, fetchOpts);
     if (!r.ok) return null;
     return await r.json();
   } catch { return null; }
@@ -2959,7 +3021,9 @@ let _genaiAgents = [];
 let _genaiCosts = [];
 let _genaiEvals = {};    // span_id → EvalResultRow
 let _genaiGuards = {};   // span_id → [GuardrailEventRow]
-let _genaiSessions = []; // SessionRow[]
+let _genaiSessions = [];     // SessionRow[]
+let _genaiDatasets = [];     // DatasetMeta[]
+let _genaiExperiments = [];  // ExperimentRow[]
 let _selectedSessionId = null;
 let _selectedTraceId = null;
 
@@ -2979,19 +3043,23 @@ async function loadGenAI() {
   if (agent) params.set('agent', agent);
   if (model) params.set('model', model);
 
-  const [spansRes, agentsRes, costsRes, evalRes, guardsRes, sessionsRes] = await Promise.all([
+  const [spansRes, agentsRes, costsRes, evalRes, guardsRes, sessionsRes, expRes, dsRes] = await Promise.all([
     api('/v1/genai/spans?' + params),
     api('/v1/genai/agents'),
     api('/v1/genai/costs?group_by=model'),
     api('/v1/genai/eval?limit=500'),
     api('/v1/genai/guardrails?limit=500'),
     api('/v1/genai/sessions?limit=100'),
+    api('/v1/experiments?limit=50'),
+    api('/v1/datasets?limit=50'),
   ]);
 
   _genaiSpans    = (spansRes?.data  || []).filter(s => !service || s.entity_id === service);
   _genaiAgents   = agentsRes?.data  || [];
   _genaiCosts    = costsRes?.data   || [];
-  _genaiSessions = sessionsRes?.data || [];
+  _genaiSessions    = sessionsRes?.data || [];
+  _genaiExperiments = expRes?.data    || [];
+  _genaiDatasets    = dsRes?.data     || [];
 
   // Index evals and guardrails by span_id for O(1) lookup
   _genaiEvals  = {};
@@ -3006,6 +3074,7 @@ async function loadGenAI() {
   renderGenAIModels();
   renderGenAITraceList();
   renderGenAISessions();
+  renderGenAIExperiments();
 }
 
 function renderGenAIStats() {
@@ -3206,6 +3275,136 @@ function openGenAISession(sessionId) {
   // Switch to a trace in this session if possible
   const span = _genaiSpans.find(s => s.session_id === sessionId);
   if (span) openGenAITrace(span.trace_id);
+}
+
+// ---------------------------------------------------------------------------
+// Experiments UI
+// ---------------------------------------------------------------------------
+
+function renderGenAIExperiments() {
+  const el = document.getElementById('g-experiments-list');
+  if (!el) return;
+
+  // Populate dataset dropdown
+  const sel = document.getElementById('exp-dataset');
+  if (sel) {
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">— choose dataset —</option>' +
+      _genaiDatasets.map(d => `<option value="${esc(d.dataset_id)}">${esc(d.name)} (${d.row_count} rows)</option>`).join('');
+    if (prev) sel.value = prev;
+  }
+
+  if (!_genaiExperiments.length) {
+    el.innerHTML = '<div class="empty" style="padding:20px">No experiments yet. Upload a dataset and click Run.</div>';
+    return;
+  }
+
+  const statusColor = s => s === 'done' ? 'var(--green)' : s === 'running' ? 'var(--yellow)' : s === 'failed' ? 'var(--red)' : 'var(--muted)';
+  el.innerHTML = _genaiExperiments.map(e => {
+    const pct = e.row_count > 0 ? Math.round((e.scored_count / e.row_count) * 100) : 0;
+    const scoreStr = e.status === 'done' ? `<span style="color:var(--accent);font-weight:600">${Math.round(e.avg_overall*100)}%</span>` : '';
+    return `<div style="padding:8px 12px;border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer;display:flex;align-items:center;gap:10px"
+                 onclick="openExperiment('${esc(e.experiment_id)}')">
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:11px;font-weight:600;color:var(--text)">${esc(e.name)}</span>
+          <span style="font-size:10px;color:${statusColor(e.status)}">${e.status}</span>
+          ${scoreStr}
+        </div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">
+          ${e.scored_count}/${e.row_count} rows scored
+          ${e.status==='running'||e.status==='pending' ? `· <span style="color:var(--yellow)">${pct}%</span>` : ''}
+        </div>
+        ${e.status==='done' ? `<div style="display:flex;gap:6px;margin-top:3px;flex-wrap:wrap">
+          ${[['Hallu',e.avg_hallucination,true],['Coh',e.avg_coherence,false],['Rel',e.avg_relevance,false],['Cor',e.avg_correctness,false]].map(([label,v,inv]) => {
+            const pv = inv ? Math.round((1-v)*100) : Math.round(v*100);
+            const col = pv>=70?'var(--green)':pv>=40?'var(--yellow)':'var(--red)';
+            return `<span style="font-size:10px;color:var(--muted)">${label}:<span style="color:${col}">${pv}%</span></span>`;
+          }).join('')}
+        </div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function openExperiment(expId) {
+  const res = await api('/v1/experiments/' + expId);
+  if (!res) return;
+  const exp = res.experiment;
+  const results = res.results || [];
+  const el = document.getElementById('g-experiment-results');
+  const title = document.getElementById('g-exp-results-title');
+  const body = document.getElementById('g-exp-results-body');
+  if (!el || !body) return;
+  title.textContent = exp.name + ' — ' + results.length + ' rows';
+  el.style.display = 'block';
+
+  if (!results.length) {
+    body.innerHTML = '<div class="empty" style="padding:16px">No results yet.</div>';
+    return;
+  }
+  const thS = `style="padding:5px 8px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border)"`;
+  body.innerHTML = `<table style="width:100%;border-collapse:collapse">
+    <thead><tr style="background:rgba(255,255,255,.025)">
+      <th ${thS} style="text-align:left">Prompt</th>
+      <th ${thS} style="text-align:right">Overall</th>
+      <th ${thS} style="text-align:right">Hallu</th>
+      <th ${thS} style="text-align:right">Coh</th>
+      <th ${thS} style="text-align:right">Cor</th>
+      <th ${thS} style="text-align:right">Cmpl</th>
+    </tr></thead>
+    <tbody>${results.map(r => {
+      const tdS = `style="padding:5px 8px;font-size:11px;border-bottom:1px solid rgba(255,255,255,.04)"`;
+      const pct = v => `<span style="color:${v>=.7?'var(--green)':v>=.4?'var(--yellow)':'var(--red)'}">${Math.round(v*100)}%</span>`;
+      const p = truncStr(r.prompt||'', 60);
+      return `<tr title="${esc(r.eval_reasoning||'')}">
+        <td ${tdS} style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p)}</td>
+        <td ${tdS} style="text-align:right">${pct(r.overall_score)}</td>
+        <td ${tdS} style="text-align:right">${pct(1-r.hallucination)}</td>
+        <td ${tdS} style="text-align:right">${pct(r.coherence)}</td>
+        <td ${tdS} style="text-align:right">${pct(r.correctness)}</td>
+        <td ${tdS} style="text-align:right">${pct(r.completeness)}</td>
+      </tr>`;
+    }).join('')}</tbody>
+  </table>`;
+}
+
+function truncStr(s, n) { return s.length > n ? s.slice(0, n) + '…' : s; }
+
+function showDatasetUpload() {
+  const p = document.getElementById('dataset-upload-panel');
+  if (p) p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+
+async function uploadDataset() {
+  const name = (document.getElementById('dataset-name')?.value || '').trim();
+  const raw = (document.getElementById('dataset-rows-json')?.value || '').trim();
+  if (!name || !raw) { alert('Dataset name and rows are required'); return; }
+  let rows;
+  try { rows = JSON.parse(raw); } catch(e) { alert('Invalid JSON: ' + e.message); return; }
+  if (!Array.isArray(rows) || !rows.length) { alert('Rows must be a non-empty JSON array'); return; }
+  const res = await api('/v1/datasets', {method:'POST', body: JSON.stringify({name, rows})});
+  if (res?.dataset_id) {
+    alert('Dataset "' + name + '" saved (' + rows.length + ' rows)');
+    document.getElementById('dataset-upload-panel').style.display = 'none';
+    document.getElementById('dataset-rows-json').value = '';
+    document.getElementById('dataset-name').value = '';
+    const data = await api('/v1/datasets?limit=50');
+    _genaiDatasets = data?.data || [];
+    renderGenAIExperiments();
+  }
+}
+
+async function submitExperiment() {
+  const name = (document.getElementById('exp-name')?.value || '').trim() || ('Experiment ' + new Date().toLocaleTimeString());
+  const dataset_id = document.getElementById('exp-dataset')?.value;
+  if (!dataset_id) { alert('Choose a dataset first'); return; }
+  const res = await api('/v1/experiments', {method:'POST', body: JSON.stringify({name, dataset_id})});
+  if (res?.experiment_id) {
+    _genaiExperiments = [res, ..._genaiExperiments];
+    renderGenAIExperiments();
+    document.getElementById('exp-name').value = '';
+  }
 }
 
 async function openGenAITrace(traceId) {

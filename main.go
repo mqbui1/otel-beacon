@@ -70,6 +70,8 @@ func main() {
 	defer evalCancel()
 	server.StartEvalWorker(evalCtx, store, logger)
 	server.StartSessionEvalWorker(evalCtx, store, logger)
+	expWorker := server.NewExperimentWorker()
+	server.StartExperimentWorker(evalCtx, expWorker, store, logger)
 
 	// ---------------------------------------------------------------------------
 	// TLS (optional — set TLS_CERT_FILE and TLS_KEY_FILE to enable)
@@ -168,7 +170,7 @@ func combinedAdmin(store *storage.Storage, logger *zap.Logger) http.Handler {
 	mux.Handle("/readyz", admin)
 	mux.Handle("/metrics", admin)
 	// Query API (spans/metrics/logs/anomalies + entities/topology/entity-signals)
-	query := server.NewQueryServer(store, logger)
+	query := server.NewQueryServer(store, expWorker, logger)
 	mux.Handle("/v1/", query)
 	// UI — must be last (catches everything not matched above)
 	mux.Handle("/", uiHandler())
