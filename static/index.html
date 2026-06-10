@@ -392,6 +392,139 @@
     .svc-empty { padding: 24px; text-align: center; color: var(--muted); font-size: 12px; }
 
     .svc-list { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
+
+    /* ── AI Agents / GenAI Tab ──────────────────────────────────────────── */
+    .genai-layout { display: grid; grid-template-columns: 360px 1fr; gap: 16px; align-items: start; min-height: 560px; }
+
+    /* Left panel */
+    .genai-left { display: flex; flex-direction: column; gap: 14px; }
+    .genai-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    .genai-panel-hdr {
+      padding: 9px 14px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 11px; font-weight: 600; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .06em;
+    }
+    .genai-tabs { display: flex; gap: 0; }
+    .genai-tab-btn {
+      padding: 5px 12px; font-size: 11px; font-weight: 600; cursor: pointer;
+      color: var(--muted); border: none; background: none;
+      border-bottom: 2px solid transparent; margin-bottom: -1px;
+      transition: color .15s;
+    }
+    .genai-tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .genai-tab-pane { display: none; }
+    .genai-tab-pane.active { display: block; }
+
+    /* Traces list on left */
+    .genai-trace-row {
+      display: flex; align-items: center; gap: 0;
+      padding: 8px 14px; border-bottom: 1px solid rgba(255,255,255,.04);
+      cursor: pointer; transition: background .1s;
+    }
+    .genai-trace-row:last-child { border-bottom: none; }
+    .genai-trace-row:hover { background: rgba(78,207,179,.06); }
+    .genai-trace-row.selected { background: rgba(78,207,179,.1); border-left: 2px solid var(--accent); padding-left: 12px; }
+
+    /* Right panel — agent workflow */
+    .genai-right {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; overflow: hidden;
+    }
+    .genai-wf-hdr {
+      padding: 12px 16px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .genai-wf-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 6px; }
+    .genai-wf-meta strong { color: var(--text); }
+    .genai-empty-state {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      height: 400px; color: var(--muted); gap: 10px;
+    }
+    .genai-empty-icon { font-size: 40px; opacity: .35; }
+
+    /* Agent workflow waterfall rows */
+    .ai-wf-row {
+      display: flex; align-items: stretch; min-height: 38px;
+      border-bottom: 1px solid rgba(255,255,255,.04);
+      cursor: pointer; transition: background .1s;
+    }
+    .ai-wf-row:last-child { border-bottom: none; }
+    .ai-wf-row:hover { background: rgba(255,255,255,.025); }
+    .ai-wf-row.expanded { background: rgba(78,207,179,.05); }
+
+    .ai-wf-label {
+      flex: 0 0 46%; padding: 7px 12px; display: flex; align-items: center;
+      gap: 4px; overflow: hidden; border-right: 1px solid var(--border);
+    }
+    .ai-wf-name {
+      font-size: 12px; font-family: 'Cascadia Code','SF Mono',monospace;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1;
+    }
+    .ai-wf-model { font-size: 10px; color: var(--muted); white-space: nowrap; margin-left: 4px; }
+    .ai-wf-tokens { font-size: 10px; color: var(--purple); white-space: nowrap; margin-left: 6px; }
+
+    .ai-wf-timeline { flex: 1; position: relative; overflow: hidden; }
+    .ai-wf-bar-wrap { position: absolute; top: 8px; bottom: 8px; }
+    .ai-wf-bar { height: 100%; border-radius: 3px; min-width: 4px; opacity: .8; }
+    .ai-wf-cost {
+      position: absolute; right: 80px; top: 50%; transform: translateY(-50%);
+      font-size: 10px; color: var(--muted); white-space: nowrap; font-family: monospace;
+    }
+    .ai-wf-right {
+      position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+      display: flex; align-items: center; gap: 5px;
+    }
+
+    /* Score badge */
+    .score-pill {
+      display: inline-flex; align-items: center; gap: 3px;
+      padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: 700;
+    }
+    .score-high  { background: rgba(78,207,179,.15);  color: var(--green); }
+    .score-mid   { background: rgba(234,179,8,.15);   color: var(--yellow); }
+    .score-low   { background: rgba(239,68,68,.15);   color: var(--red); }
+    .score-none  { background: rgba(100,116,139,.1);  color: var(--muted); }
+    .guard-icon  { font-size: 11px; cursor: help; }
+
+    /* Expanded span detail */
+    .ai-span-detail {
+      display: none; background: rgba(0,0,0,.3);
+      border-bottom: 1px solid var(--border);
+    }
+    .ai-span-detail.open { display: block; }
+    .ai-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 14px 16px; }
+    .ai-detail-col h4 {
+      font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+      color: var(--muted); margin-bottom: 8px; font-weight: 700;
+    }
+    .ai-prompt-box {
+      background: rgba(0,0,0,.4); border: 1px solid var(--border); border-radius: 6px;
+      padding: 10px 12px; font-size: 11px; font-family: monospace; color: var(--text);
+      max-height: 180px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+      line-height: 1.5;
+    }
+    .ai-completion-box {
+      background: rgba(78,207,179,.04); border: 1px solid rgba(78,207,179,.2); border-radius: 6px;
+      padding: 10px 12px; font-size: 11px; font-family: monospace; color: var(--text);
+      max-height: 180px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
+      line-height: 1.5;
+    }
+    .ai-score-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 11px; border-bottom: 1px solid rgba(255,255,255,.04); }
+    .ai-score-row:last-child { border-bottom: none; }
+    .ai-score-bar-wrap { flex: 1; margin: 0 10px; background: rgba(255,255,255,.06); border-radius: 2px; height: 4px; align-self: center; }
+    .ai-score-bar { height: 100%; border-radius: 2px; }
+    .ai-guardrail-item { padding: 6px 10px; margin-bottom: 6px; border-radius: 5px; font-size: 11px; }
+    .ai-guardrail-high  { background: rgba(239,68,68,.12); border-left: 3px solid var(--red); }
+    .ai-guardrail-medium { background: rgba(249,115,22,.12); border-left: 3px solid var(--orange); }
+    .ai-guardrail-low   { background: rgba(234,179,8,.12); border-left: 3px solid var(--yellow); }
+
+    /* Agent color swatches */
+    .agent-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+    /* Cost mini bar */
+    .cost-bar-wrap { flex: 1; background: rgba(255,255,255,.06); border-radius: 2px; height: 5px; margin: 0 8px; align-self: center; }
+    .cost-bar { height: 100%; border-radius: 2px; background: var(--purple); }
   </style>
 </head>
 <body>
@@ -404,6 +537,7 @@
     <button onclick="switchTab('traces',this)">Traces</button>
     <button onclick="switchTab('metrics',this)">Metrics</button>
     <button onclick="switchTab('logs',this)">Logs</button>
+    <button onclick="switchTab('genai',this)" style="color:var(--purple)">AI Agents</button>
   </nav>
   <div class="hdr-right">
     <span id="last-refresh">—</span>
@@ -734,6 +868,95 @@
   </div>
 </div>
 
+<!-- ══ AI AGENTS / GENAI ═══════════════════════════════════════════════════ -->
+<div class="tab" id="tab-genai">
+  <div class="stats">
+    <div class="stat"><div class="val" id="g-agents">—</div><div class="lbl">Agents</div></div>
+    <div class="stat"><div class="val" id="g-spans">—</div><div class="lbl">LLM Calls</div></div>
+    <div class="stat"><div class="val" id="g-cost" style="color:var(--purple)">—</div><div class="lbl">Total Cost</div></div>
+    <div class="stat"><div class="val" id="g-guardrails" style="color:var(--red)">—</div><div class="lbl">Guardrail Alerts</div></div>
+    <div class="stat"><div class="val" id="g-score" style="color:var(--green)">—</div><div class="lbl">Avg Quality</div></div>
+    <div class="stat"><div class="val" id="g-models">—</div><div class="lbl">Models</div></div>
+  </div>
+
+  <div class="filters">
+    <label>Service<input id="g-f-service" placeholder="filter by service"></label>
+    <label>Agent<input id="g-f-agent" placeholder="filter by agent name"></label>
+    <label>Model<input id="g-f-model" placeholder="gpt-4o, claude-3…"></label>
+    <button onclick="loadGenAI()">Apply</button>
+  </div>
+
+  <div class="genai-layout">
+    <!-- ── Left panel ── -->
+    <div class="genai-left">
+
+      <!-- Agents / Models / Costs panel -->
+      <div class="genai-panel">
+        <div class="genai-panel-hdr">
+          <span>Overview</span>
+          <div class="genai-tabs">
+            <button class="genai-tab-btn active" onclick="switchGenAITab('agents',this)">Agents</button>
+            <button class="genai-tab-btn" onclick="switchGenAITab('models',this)">Models</button>
+          </div>
+        </div>
+        <div class="genai-tab-pane active" id="g-pane-agents">
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="background:rgba(255,255,255,.025)">
+              <th style="padding:7px 12px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:left;border-bottom:1px solid var(--border)">Agent</th>
+              <th style="padding:7px 8px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:right;border-bottom:1px solid var(--border)">Calls</th>
+              <th style="padding:7px 8px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:right;border-bottom:1px solid var(--border)">Cost</th>
+              <th style="padding:7px 8px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:right;border-bottom:1px solid var(--border)">Quality</th>
+            </tr></thead>
+            <tbody id="g-agents-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="genai-tab-pane" id="g-pane-models">
+          <table style="width:100%;border-collapse:collapse">
+            <thead><tr style="background:rgba(255,255,255,.025)">
+              <th style="padding:7px 12px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:left;border-bottom:1px solid var(--border)">Model</th>
+              <th style="padding:7px 8px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:right;border-bottom:1px solid var(--border)">Calls</th>
+              <th style="padding:7px 8px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:right;border-bottom:1px solid var(--border)">Cost</th>
+              <th style="padding:7px 8px;font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;text-align:right;border-bottom:1px solid var(--border)">Tokens</th>
+            </tr></thead>
+            <tbody id="g-models-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Recent traces list -->
+      <div class="genai-panel">
+        <div class="genai-panel-hdr">
+          <span>Recent Agent Traces</span>
+          <span class="dim" id="g-trace-count">—</span>
+        </div>
+        <div id="g-traces-list" style="max-height:340px;overflow-y:auto">
+          <div class="empty" style="padding:24px">Loading…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Right panel — Agent Workflow Waterfall ── -->
+    <div class="genai-right" id="g-right-panel">
+      <div class="genai-wf-hdr">
+        <div>
+          <div style="font-size:13px;font-weight:600" id="g-wf-title">Agent Workflow View</div>
+          <div class="genai-wf-meta" id="g-wf-meta">
+            <span>Select a trace from the left panel to view the full agent-to-agent call flow</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px" id="g-wf-actions" style="display:none"></div>
+      </div>
+      <div id="g-waterfall-body">
+        <div class="genai-empty-state">
+          <div class="genai-empty-icon">🤖</div>
+          <div style="font-size:13px;font-weight:600">No trace selected</div>
+          <div style="font-size:12px;max-width:280px;text-align:center">Click a trace on the left to view the complete agent-to-agent workflow with LLM calls, token usage, costs, and quality evaluations</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 </main>
 
 <!-- ══ RCA MODAL ════════════════════════════════════════════════════════════ -->
@@ -791,6 +1014,7 @@ function loadCurrent() {
   else if (currentTab === 'logs')      loadLogs();
   else if (currentTab === 'anomalies') loadAnomalies();
   else if (currentTab === 'services')  { loadServices(); loadIncidents(); }
+  else if (currentTab === 'genai')     loadGenAI();
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -2669,6 +2893,469 @@ function switchRcaEvTab(name, btn) {
     const el = document.getElementById('rca-ev-' + n);
     if (el) el.style.display = n === name ? '' : 'none';
   });
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ── AI Agents / GenAI Tab ───────────────────────────────────────────────────
+// ════════════════════════════════════════════════════════════════════════════
+
+// Deterministic agent color from name
+const AGENT_COLORS = ['#a78bfa','#4ecfb3','#22d3ee','#f97316','#eab308','#ec4899','#34d399','#60a5fa'];
+function agentColor(name) {
+  let h = 0;
+  for (let i = 0; i < (name||'').length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffff;
+  return AGENT_COLORS[h % AGENT_COLORS.length];
+}
+
+function fmtCost(usd) {
+  if (usd == null || usd === 0) return '$0.00';
+  if (usd < 0.001) return '$' + usd.toFixed(6);
+  if (usd < 0.01)  return '$' + usd.toFixed(4);
+  return '$' + usd.toFixed(3);
+}
+
+function scorePill(score) {
+  if (score == null || score === 0) return '<span class="score-pill score-none">—</span>';
+  const cls = score >= 0.75 ? 'score-high' : score >= 0.5 ? 'score-mid' : 'score-low';
+  const dot = score >= 0.75 ? '●' : score >= 0.5 ? '◐' : '○';
+  return `<span class="score-pill ${cls}">${dot} ${score.toFixed(2)}</span>`;
+}
+
+function scoreBarColor(score) {
+  if (score >= 0.75) return 'var(--green)';
+  if (score >= 0.5)  return 'var(--yellow)';
+  return 'var(--red)';
+}
+
+// GenAI tab globals
+let _genaiSpans = [];
+let _genaiAgents = [];
+let _genaiCosts = [];
+let _genaiEvals = {};    // span_id → EvalResultRow
+let _genaiGuards = {};   // span_id → [GuardrailEventRow]
+let _selectedTraceId = null;
+
+function switchGenAITab(name, btn) {
+  btn.closest('.genai-tabs').querySelectorAll('.genai-tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.querySelectorAll('#tab-genai .genai-tab-pane').forEach(p => p.classList.remove('active'));
+  document.getElementById('g-pane-' + name).classList.add('active');
+}
+
+async function loadGenAI() {
+  const service = document.getElementById('g-f-service')?.value || '';
+  const agent   = document.getElementById('g-f-agent')?.value   || '';
+  const model   = document.getElementById('g-f-model')?.value   || '';
+
+  const params = new URLSearchParams({ limit: 300 });
+  if (agent) params.set('agent', agent);
+  if (model) params.set('model', model);
+
+  const [spansRes, agentsRes, costsRes, evalRes, guardsRes] = await Promise.all([
+    api('/v1/genai/spans?' + params),
+    api('/v1/genai/agents'),
+    api('/v1/genai/costs?group_by=model'),
+    api('/v1/genai/eval?limit=500'),
+    api('/v1/genai/guardrails?limit=500'),
+  ]);
+
+  _genaiSpans  = (spansRes?.data  || []).filter(s => !service || s.entity_id === service);
+  _genaiAgents = agentsRes?.data  || [];
+  _genaiCosts  = costsRes?.data   || [];
+
+  // Index evals and guardrails by span_id for O(1) lookup
+  _genaiEvals  = {};
+  (evalRes?.data || []).forEach(e => { _genaiEvals[e.span_id] = e; });
+  _genaiGuards = {};
+  (guardsRes?.data || []).forEach(g => {
+    (_genaiGuards[g.span_id] = _genaiGuards[g.span_id] || []).push(g);
+  });
+
+  renderGenAIStats();
+  renderGenAIAgents();
+  renderGenAIModels();
+  renderGenAITraceList();
+}
+
+function renderGenAIStats() {
+  const totalCost = _genaiSpans.reduce((s, r) => s + (r.total_cost_usd || 0), 0);
+  const guardrailCount = Object.values(_genaiGuards).reduce((n, arr) => n + arr.length, 0);
+  const evalScores = Object.values(_genaiEvals).map(e => e.overall_score).filter(s => s > 0);
+  const avgScore = evalScores.length ? evalScores.reduce((a, b) => a + b, 0) / evalScores.length : null;
+  const models = new Set(_genaiSpans.map(s => s.model).filter(Boolean));
+
+  // Count unique agents
+  const agentSet = new Set(_genaiSpans.map(s => s.agent_name).filter(Boolean));
+  agentSet.add(..._genaiAgents.map(a => a.agent_name).filter(Boolean));
+
+  document.getElementById('g-agents').textContent    = _genaiAgents.length || agentSet.size || '0';
+  document.getElementById('g-spans').textContent     = _genaiSpans.length;
+  document.getElementById('g-cost').textContent      = fmtCost(totalCost);
+  document.getElementById('g-guardrails').textContent = guardrailCount;
+  document.getElementById('g-score').textContent     = avgScore != null ? avgScore.toFixed(2) : '—';
+  document.getElementById('g-models').textContent    = models.size;
+}
+
+function renderGenAIAgents() {
+  const tbody = document.getElementById('g-agents-body');
+  if (!tbody) return;
+  // Merge backend agent rows + local span aggregation
+  const byAgent = {};
+  _genaiSpans.forEach(s => {
+    const k = s.agent_name || s.entity_id || '(unknown)';
+    if (!byAgent[k]) byAgent[k] = { name: k, spans: 0, cost: 0, scores: [] };
+    byAgent[k].spans++;
+    byAgent[k].cost += s.total_cost_usd || 0;
+    const ev = _genaiEvals[s.span_id];
+    if (ev && ev.overall_score > 0) byAgent[k].scores.push(ev.overall_score);
+  });
+  // Also merge from backend agents API
+  _genaiAgents.forEach(a => {
+    const k = a.agent_name || '(unknown)';
+    if (!byAgent[k]) byAgent[k] = { name: k, spans: 0, cost: 0, scores: [] };
+    byAgent[k].spans = Math.max(byAgent[k].spans, a.span_count || 0);
+    byAgent[k].cost  = Math.max(byAgent[k].cost,  a.total_cost_usd || 0);
+  });
+
+  const rows = Object.values(byAgent).sort((a, b) => b.cost - a.cost);
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">No agent data yet</td></tr>';
+    return;
+  }
+  const maxCost = Math.max(...rows.map(r => r.cost), 0.0001);
+  tbody.innerHTML = rows.map(r => {
+    const avg = r.scores.length ? r.scores.reduce((a,b)=>a+b,0)/r.scores.length : null;
+    const color = agentColor(r.name);
+    return `<tr>
+      <td style="padding:7px 12px">
+        <div style="display:flex;align-items:center;gap:7px">
+          <div class="agent-dot" style="background:${color}"></div>
+          <span style="font-size:12px;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px" title="${esc(r.name)}">${esc(r.name)}</span>
+        </div>
+      </td>
+      <td style="padding:7px 8px;text-align:right;font-size:11px;color:var(--muted)">${r.spans}</td>
+      <td style="padding:7px 8px;text-align:right">
+        <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px">
+          <div class="cost-bar-wrap" style="width:40px"><div class="cost-bar" style="width:${(r.cost/maxCost*100).toFixed(0)}%;background:${color}"></div></div>
+          <span style="font-size:11px;font-family:monospace;color:var(--purple)">${fmtCost(r.cost)}</span>
+        </div>
+      </td>
+      <td style="padding:7px 8px;text-align:right">${scorePill(avg)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderGenAIModels() {
+  const tbody = document.getElementById('g-models-body');
+  if (!tbody) return;
+  const bm = {};
+  _genaiSpans.forEach(s => {
+    const k = s.model || '(unknown)';
+    if (!bm[k]) bm[k] = { spans: 0, cost: 0, tokens: 0 };
+    bm[k].spans++;
+    bm[k].cost   += s.total_cost_usd || 0;
+    bm[k].tokens += (s.input_tokens || 0) + (s.output_tokens || 0);
+  });
+  // Merge from costs API (model group_by)
+  _genaiCosts.forEach(c => {
+    if (!bm[c.dimension]) bm[c.dimension] = { spans: 0, cost: 0, tokens: 0 };
+    bm[c.dimension].spans  = Math.max(bm[c.dimension].spans,  c.span_count || 0);
+    bm[c.dimension].cost   = Math.max(bm[c.dimension].cost,   c.total_cost_usd || 0);
+    bm[c.dimension].tokens = Math.max(bm[c.dimension].tokens, c.total_tokens || 0);
+  });
+  const rows = Object.entries(bm).sort(([,a],[,b]) => b.cost - a.cost);
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">No model data yet</td></tr>';
+    return;
+  }
+  const maxCost = Math.max(...rows.map(([,r]) => r.cost), 0.0001);
+  tbody.innerHTML = rows.map(([model, r]) => `<tr>
+    <td style="padding:7px 12px;font-size:11px;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:180px" title="${esc(model)}">${esc(model)}</td>
+    <td style="padding:7px 8px;text-align:right;font-size:11px;color:var(--muted)">${r.spans}</td>
+    <td style="padding:7px 8px;text-align:right">
+      <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px">
+        <div class="cost-bar-wrap" style="width:40px"><div class="cost-bar" style="width:${(r.cost/maxCost*100).toFixed(0)}%"></div></div>
+        <span style="font-size:11px;font-family:monospace;color:var(--purple)">${fmtCost(r.cost)}</span>
+      </div>
+    </td>
+    <td style="padding:7px 8px;text-align:right;font-size:11px;color:var(--muted);font-family:monospace">${(r.tokens/1000).toFixed(1)}K</td>
+  </tr>`).join('');
+}
+
+function renderGenAITraceList() {
+  const el = document.getElementById('g-traces-list');
+  if (!el) return;
+
+  // Group spans by trace_id
+  const byTrace = {};
+  _genaiSpans.forEach(s => {
+    if (!byTrace[s.trace_id]) {
+      byTrace[s.trace_id] = { spans: [], cost: 0, startNs: s.start_ns };
+    }
+    byTrace[s.trace_id].spans.push(s);
+    byTrace[s.trace_id].cost += s.total_cost_usd || 0;
+    if (s.start_ns > byTrace[s.trace_id].startNs) byTrace[s.trace_id].startNs = s.start_ns;
+  });
+
+  const traces = Object.entries(byTrace)
+    .sort(([,a],[,b]) => b.startNs - a.startNs)
+    .slice(0, 50);
+
+  document.getElementById('g-trace-count').textContent = traces.length + ' traces';
+
+  if (!traces.length) {
+    el.innerHTML = '<div class="empty" style="padding:24px">No GenAI traces yet. Deploy an agent app to see data here.</div>';
+    return;
+  }
+
+  el.innerHTML = traces.map(([traceId, t]) => {
+    const agents = [...new Set(t.spans.map(s => s.agent_name).filter(Boolean))];
+    const models = [...new Set(t.spans.map(s => s.model).filter(Boolean))];
+    const hasGuard = t.spans.some(s => (_genaiGuards[s.span_id]||[]).length > 0);
+    const evalScores = t.spans.map(s => _genaiEvals[s.span_id]?.overall_score).filter(Boolean);
+    const avgScore = evalScores.length ? evalScores.reduce((a,b)=>a+b,0)/evalScores.length : null;
+    const selected = _selectedTraceId === traceId;
+    return `<div class="genai-trace-row${selected ? ' selected' : ''}" onclick="openGenAITrace('${esc(traceId)}')">
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+          <span style="font-size:11px;font-family:monospace;color:var(--cyan)">${traceId.slice(0,12)}…</span>
+          ${hasGuard ? '<span style="font-size:11px" title="Guardrail triggered">🛡️</span>' : ''}
+          ${scorePill(avgScore)}
+        </div>
+        <div style="font-size:10px;color:var(--muted);display:flex;gap:8px;flex-wrap:wrap">
+          ${agents.length ? `<span>${agents.slice(0,3).map(a => `<span style="color:${agentColor(a)}">${esc(a)}</span>`).join(', ')}${agents.length>3?` +${agents.length-3}`:''}` : ''}
+          <span style="color:var(--purple)">${fmtCost(t.cost)}</span>
+          <span>${t.spans.length} call${t.spans.length!==1?'s':''}</span>
+          <span>${fmtTime(t.startNs)}</span>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function openGenAITrace(traceId) {
+  _selectedTraceId = traceId;
+  // Re-render list to show selection
+  renderGenAITraceList();
+
+  const el = document.getElementById('g-waterfall-body');
+  el.innerHTML = '<div class="genai-empty-state"><div style="color:var(--muted)">Loading trace…</div></div>';
+
+  const res = await api('/v1/genai/trace/' + traceId);
+  const data = res?.data || res || {};
+  const spans     = data.spans      || [];
+  const evals     = data.evals      || [];
+  const guardrails= data.guardrails || [];
+
+  if (!spans.length) {
+    el.innerHTML = '<div class="genai-empty-state"><div class="genai-empty-icon">🔍</div><div>No GenAI spans found for this trace</div></div>';
+    return;
+  }
+
+  // Index evals and guardrails for this trace
+  const evalMap   = {};
+  evals.forEach(e => { evalMap[e.span_id] = e; });
+  const guardMap  = {};
+  guardrails.forEach(g => { (guardMap[g.span_id] = guardMap[g.span_id]||[]).push(g); });
+
+  // Update meta
+  const totalCost = spans.reduce((s,r) => s + (r.total_cost_usd||0), 0);
+  const totalIn   = spans.reduce((s,r) => s + (r.input_tokens||0), 0);
+  const totalOut  = spans.reduce((s,r) => s + (r.output_tokens||0), 0);
+  const agents    = [...new Set(spans.map(s=>s.agent_name).filter(Boolean))];
+  const startNs   = Math.min(...spans.map(s=>s.start_ns).filter(Boolean));
+  const endNs     = Math.max(...spans.map(s=>s.start_ns+(s.duration_ms||0)*1e6).filter(Boolean));
+  const totalMs   = (endNs - startNs) / 1e6;
+  const guardCount = guardrails.filter(g => g.triggered).length;
+  const evalScores = evals.map(e=>e.overall_score).filter(s=>s>0);
+  const avgScore  = evalScores.length ? evalScores.reduce((a,b)=>a+b,0)/evalScores.length : null;
+
+  document.getElementById('g-wf-title').textContent = 'Agent Workflow — ' + traceId.slice(0,16) + '…';
+  document.getElementById('g-wf-meta').innerHTML = `
+    <span>🤖 <strong>${agents.length || '?'}</strong> agents</span>
+    <span>📞 <strong>${spans.length}</strong> LLM calls</span>
+    <span style="color:var(--purple)">💰 <strong>${fmtCost(totalCost)}</strong></span>
+    <span style="color:var(--muted)">🔢 <strong>${((totalIn+totalOut)/1000).toFixed(1)}K</strong> tokens</span>
+    <span style="color:var(--cyan)">⏱ <strong>${fmtDur(totalMs)}</strong></span>
+    ${avgScore!=null ? `<span>${scorePill(avgScore)} avg quality</span>` : ''}
+    ${guardCount > 0 ? `<span style="color:var(--red)">🛡️ <strong>${guardCount}</strong> guardrail alert${guardCount!==1?'s':''}</span>` : ''}
+  `;
+
+  renderGenAIWaterfall(spans, evalMap, guardMap, startNs, endNs);
+}
+
+function renderGenAIWaterfall(spans, evalMap, guardMap, traceStartNs, traceEndNs) {
+  const el = document.getElementById('g-waterfall-body');
+  const totalMs = Math.max((traceEndNs - traceStartNs) / 1e6, 1);
+
+  // Build tree
+  const byId   = {};
+  spans.forEach(s => { byId[s.span_id] = s; });
+  const children = {};
+  const roots    = [];
+  spans.forEach(s => {
+    const pid = s.parent_span_id;
+    if (pid && byId[pid]) {
+      (children[pid] = children[pid]||[]).push(s);
+    } else {
+      roots.push(s);
+    }
+  });
+  // Sort children by start time
+  Object.values(children).forEach(arr => arr.sort((a,b) => a.start_ns - b.start_ns));
+  roots.sort((a,b) => a.start_ns - b.start_ns);
+
+  let rowsHTML = '';
+  const genRow = (span, depth) => {
+    const ev       = evalMap[span.span_id];
+    const guards   = guardMap[span.span_id] || [];
+    const color    = agentColor(span.agent_name || span.entity_id || '');
+    const left     = Math.max(0, Math.min(99, (span.start_ns - traceStartNs) / 1e6 / totalMs * 100));
+    const width    = Math.max(0.5, Math.min(100 - left, (span.duration_ms || 1) / totalMs * 100));
+    const isErr    = span.status_code === 2;
+    const barColor = isErr ? 'var(--red)' : color;
+    const tokenStr = (span.input_tokens||0) || (span.output_tokens||0)
+      ? `${span.input_tokens||0}→${span.output_tokens||0}`
+      : '';
+    const hasGuard = guards.some(g => g.triggered);
+    const indent   = depth * 20;
+    const connector= depth > 0 ? '└─' : '';
+    const spanId   = span.span_id;
+
+    const label = span.agent_name
+      ? `<span style="color:${color}">${esc(span.agent_name)}</span>`
+      : `<span style="color:var(--muted)">${esc(span.operation||span.system||'llm')}</span>`;
+
+    rowsHTML += `
+    <div class="ai-wf-row" id="wf-row-${spanId}" onclick="toggleAISpanDetail('${spanId}')">
+      <div class="ai-wf-label">
+        <div class="ai-wf-indent" style="width:${indent}px;flex-shrink:0"></div>
+        ${depth > 0 ? `<span class="ai-wf-connector" style="color:var(--border);font-size:10px;margin-right:4px">${connector}</span>` : ''}
+        <div class="agent-dot" style="background:${color};margin-right:6px;flex-shrink:0"></div>
+        <span class="ai-wf-name">${label}</span>
+        <span class="ai-wf-model">${esc(span.model||'')}</span>
+        ${tokenStr ? `<span class="ai-wf-tokens">${esc(tokenStr)}</span>` : ''}
+      </div>
+      <div class="ai-wf-timeline">
+        <div class="ai-wf-bar-wrap" style="left:${left.toFixed(1)}%;width:${width.toFixed(1)}%">
+          <div class="ai-wf-bar" style="background:${barColor}"></div>
+        </div>
+        <span class="ai-wf-cost">${fmtCost(span.total_cost_usd)}</span>
+        <div class="ai-wf-right">
+          ${hasGuard ? `<span class="guard-icon" title="${esc(guards.map(g=>g.check_type+': '+g.detail).join('; '))}">🛡️</span>` : ''}
+          ${ev ? scorePill(ev.overall_score) : ''}
+          <span style="font-size:10px;color:var(--muted);font-family:monospace">${fmtDur(span.duration_ms)}</span>
+        </div>
+      </div>
+    </div>
+    <div class="ai-span-detail" id="detail-${spanId}">
+      ${renderAISpanDetailInner(span, ev, guards)}
+    </div>`;
+
+    (children[spanId]||[]).forEach(c => genRow(c, depth+1));
+  };
+
+  roots.forEach(r => genRow(r, 0));
+
+  const header = `
+  <div class="wf-header">
+    <div class="wf-header-label" style="flex:0 0 46%">Agent · Model · Tokens</div>
+    <div class="wf-header-ticks" style="flex:1;position:relative;height:24px">
+      ${[0,25,50,75,100].map(p => `<div style="position:absolute;left:${p}%;top:0;bottom:0;border-left:1px dashed rgba(255,255,255,.1);padding-left:3px;display:flex;align-items:center;font-size:10px;color:var(--muted)">${p===100?'':(fmtDur(totalMs * p/100))}</div>`).join('')}
+    </div>
+  </div>`;
+
+  el.innerHTML = `
+    <div style="overflow-x:auto">
+      ${header}
+      ${rowsHTML || '<div class="empty" style="padding:20px">No spans in this trace</div>'}
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px;padding:10px 14px;border-top:1px solid var(--border);font-size:10px;color:var(--muted)">
+      ${[...new Set(spans.map(s=>s.agent_name).filter(Boolean))].map(a =>
+        `<span style="display:flex;align-items:center;gap:4px">
+          <span style="width:8px;height:8px;border-radius:50%;background:${agentColor(a)};display:inline-block"></span>${esc(a)}
+        </span>`).join('')}
+    </div>`;
+}
+
+function renderAISpanDetailInner(span, ev, guards) {
+  const metaRows = [
+    ['Trace ID',  span.trace_id?.slice(0,24)+'…'],
+    ['Span ID',   span.span_id?.slice(0,16)+'…'],
+    ['System',    span.system   || '—'],
+    ['Operation', span.operation|| '—'],
+    ['Model',     span.model    || '—'],
+    ['Duration',  fmtDur(span.duration_ms)],
+    ['Tokens in', (span.input_tokens||0).toLocaleString()],
+    ['Tokens out',(span.output_tokens||0).toLocaleString()],
+    ['Cost',      fmtCost(span.total_cost_usd)],
+    ['Status',    span.status_code===2 ? '<span style="color:var(--red)">ERROR</span>' : '<span style="color:var(--green)">OK</span>'],
+  ].map(([k,v]) => `<div class="ai-score-row"><span style="color:var(--muted);min-width:70px">${esc(k)}</span><span style="font-family:monospace;font-size:11px">${v||'—'}</span></div>`).join('');
+
+  const promptHTML = span.prompt
+    ? `<div class="ai-prompt-box">${esc(span.prompt)}</div>`
+    : '<div style="color:var(--muted);font-size:11px;padding:8px 0">No prompt captured<br><span style="font-size:10px">Set OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true</span></div>';
+  const completionHTML = span.completion
+    ? `<div class="ai-completion-box">${esc(span.completion)}</div>`
+    : '<div style="color:var(--muted);font-size:11px;padding:8px 0">No completion captured</div>';
+
+  const evalHTML = ev ? `
+    ${[
+      ['Hallucination', ev.hallucination, false],
+      ['Coherence',     ev.coherence,     true],
+      ['Relevance',     ev.relevance,     true],
+      ['Toxicity',      ev.toxicity,      false],
+      ['Overall',       ev.overall_score, true],
+    ].map(([lbl, val, higherBetter]) => {
+      const pct  = Math.round((val||0)*100);
+      const barW = higherBetter ? pct : (100-pct);
+      const col  = higherBetter
+        ? (pct>=75?'var(--green)':pct>=50?'var(--yellow)':'var(--red)')
+        : (pct<=25?'var(--green)':pct<=50?'var(--yellow)':'var(--red)');
+      return `<div class="ai-score-row">
+        <span style="color:var(--muted);min-width:90px;font-size:11px">${lbl}</span>
+        <div class="ai-score-bar-wrap"><div class="ai-score-bar" style="width:${barW}%;background:${col}"></div></div>
+        <span style="font-family:monospace;font-size:11px;min-width:32px;text-align:right;color:${col}">${(val||0).toFixed(2)}</span>
+      </div>`;
+    }).join('')}
+    ${ev.reasoning ? `<div style="font-size:10px;color:var(--muted);margin-top:8px;font-style:italic">${esc(ev.reasoning)}</div>` : ''}
+  ` : '<div style="color:var(--muted);font-size:11px;padding:4px 0">Evaluation pending…</div>';
+
+  const guardsHTML = guards.filter(g=>g.triggered).length
+    ? guards.filter(g=>g.triggered).map(g => `
+        <div class="ai-guardrail-item ai-guardrail-${g.severity||'medium'}">
+          <div style="font-weight:600;font-size:11px;margin-bottom:2px">${esc(g.check_type)} <span style="float:right;text-transform:uppercase;font-size:9px">${esc(g.severity)}</span></div>
+          <div style="font-size:10px;color:var(--muted)">${esc(g.detail)}</div>
+        </div>`).join('')
+    : '<div style="color:var(--green);font-size:11px;padding:4px 0">✓ No guardrail violations</div>';
+
+  return `<div class="ai-detail-grid">
+    <div class="ai-detail-col" style="grid-column:1/3">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div>
+          <h4>Prompt</h4>${promptHTML}
+        </div>
+        <div>
+          <h4>Completion</h4>${completionHTML}
+        </div>
+      </div>
+    </div>
+    <div class="ai-detail-col">
+      <h4>Span Info</h4>${metaRows}
+    </div>
+    <div class="ai-detail-col">
+      <h4 style="margin-bottom:10px">Quality Evaluation</h4>${evalHTML}
+      <h4 style="margin-top:14px;margin-bottom:8px">Guardrail Checks</h4>${guardsHTML}
+    </div>
+  </div>`;
+}
+
+function toggleAISpanDetail(spanId) {
+  const row    = document.getElementById('wf-row-' + spanId);
+  const detail = document.getElementById('detail-' + spanId);
+  if (!detail) return;
+  const open = detail.classList.toggle('open');
+  row?.classList.toggle('expanded', open);
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
