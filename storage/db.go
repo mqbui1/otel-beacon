@@ -21,9 +21,9 @@ import (
 
 const (
 	defaultBatchSize     = 500
-	defaultFlushInterval = 200 * time.Millisecond
+	defaultFlushInterval = 500 * time.Millisecond // wider window → larger batches → fewer write transactions
 	defaultChannelSize   = 10_000
-	defaultMaxRetries    = 3
+	defaultMaxRetries    = 5
 )
 
 type AlgoType string

@@ -27,9 +27,15 @@ func (b *SQLiteBackend) Init(ctx context.Context) error {
 	if _, err := b.db.ExecContext(ctx, "PRAGMA journal_mode=WAL"); err != nil {
 		return err
 	}
-	if _, err := b.db.ExecContext(ctx, "PRAGMA busy_timeout=5000"); err != nil {
+	// 30 s busy timeout — SQLite retries at the C level before returning SQLITE_BUSY.
+	// This absorbs burst contention from the many concurrent worker goroutines.
+	if _, err := b.db.ExecContext(ctx, "PRAGMA busy_timeout=30000"); err != nil {
 		return err
 	}
+	// Synchronise writes to the WAL: NORMAL is safe and much faster than FULL.
+	b.db.ExecContext(ctx, "PRAGMA synchronous=NORMAL")
+	// Single writer at a time — eliminate connection-pool write contention.
+	b.db.SetMaxOpenConns(1)
 	if _, err := b.db.ExecContext(ctx, sqliteSchema); err != nil {
 		return err
 	}
