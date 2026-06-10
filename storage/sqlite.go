@@ -36,12 +36,13 @@ func (b *SQLiteBackend) Init(ctx context.Context) error {
 	b.db.ExecContext(ctx, "PRAGMA synchronous=NORMAL")
 	// Single writer at a time — eliminate connection-pool write contention.
 	b.db.SetMaxOpenConns(1)
+	// Run column migrations first so the full schema (including new indexes) succeeds on existing DBs.
+	b.migrateSchema(ctx)
 	if _, err := b.db.ExecContext(ctx, sqliteSchema); err != nil {
 		return err
 	}
 	// Remove stale inferred topology entries for embedded databases.
 	b.db.ExecContext(ctx, `DELETE FROM service_topology WHERE target_service IN ('hsqldb','h2','derby','sqlite') OR target_service LIKE '%/%'`)
-	b.migrateSchema(ctx)
 	return nil
 }
 
