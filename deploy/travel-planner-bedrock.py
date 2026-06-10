@@ -242,8 +242,9 @@ def call_agent(agent: str, prompt: str, parent_ctx) -> tuple[str, int, int]:
         span.set_attribute("gen_ai.request.temperature", 0.7)
 
         # Add span event for the user message (captures prompt content)
+        # OTel gen_ai spec uses "content" as the attribute key
         span.add_event("gen_ai.user.message", {
-            "gen_ai.prompt": prompt[:2000]  # truncate very long prompts
+            "content": prompt[:2000]
         })
 
         try:
@@ -267,7 +268,7 @@ def call_agent(agent: str, prompt: str, parent_ctx) -> tuple[str, int, int]:
 
             # Add assistant response event
             span.add_event("gen_ai.assistant.message", {
-                "gen_ai.completion": text[:2000]
+                "content": text[:2000]
             })
 
             span.set_status(StatusCode.OK)

@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
+	"strings"
 	"time"
+	"unicode"
 
 	"go.uber.org/zap"
 
@@ -53,9 +56,9 @@ func StartEvalWorker(ctx context.Context, store *storage.Storage, logger *zap.Lo
 				}
 				result, err := evaluateSpan(ctx, client, modelID, gs)
 				if err != nil {
-					logger.Debug("eval worker: evaluation failed",
+					logger.Debug("eval worker: Bedrock unavailable, using heuristic eval",
 						zap.String("span_id", gs.SpanID), zap.Error(err))
-					continue
+					result = heuristicEval(gs)
 				}
 				if err := store.FlushEvalResults(ctx, []storage.EvalResultRow{result}); err != nil {
 					logger.Debug("eval worker: flush failed", zap.Error(err))
@@ -169,4 +172,92 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "…"
+}
+
+// heuristicEval scores a span without an LLM using fast text heuristics.
+// Used as fallback when Bedrock is unavailable.
+func heuristicEval(gs storage.GenAISpanRow) storage.EvalResultRow {
+	prompt := gs.Prompt
+	completion := gs.Completion
+
+	// --- Coherence: completion length, sentence structure, ends properly ---
+	coherence := 0.5
+	words := len(strings.Fields(completion))
+	if words > 20 {
+		coherence = math.Min(0.95, 0.6+float64(words)/500.0)
+	} else if words < 5 {
+		coherence = 0.3
+	}
+	// Boost if completion ends with punctuation (structured response).
+	trimmed := strings.TrimRightFunc(completion, unicode.IsSpace)
+	if len(trimmed) > 0 {
+		last := rune(trimmed[len(trimmed)-1])
+		if last == '.' || last == '!' || last == '?' || last == ')' {
+			coherence = math.Min(0.98, coherence+0.05)
+		}
+	}
+
+	// --- Relevance: token overlap between prompt and completion ---
+	relevance := 0.5
+	if prompt != "" && completion != "" {
+		promptWords := tokenSet(prompt)
+		completionWords := tokenSet(completion)
+		overlap := 0
+		for w := range completionWords {
+			if promptWords[w] {
+				overlap++
+			}
+		}
+		if len(completionWords) > 0 {
+			relevance = math.Min(0.95, 0.4+float64(overlap)/float64(len(completionWords))*0.6)
+		}
+	}
+
+	// --- Toxicity: keyword scan (reuse guardrail vocabulary) ---
+	toxicity := 0.02
+	lc := strings.ToLower(prompt + " " + completion)
+	for _, kw := range []string{"kill", "harm", "bomb", "attack", "poison", "illegal", "csam", "violence"} {
+		if strings.Contains(lc, kw) {
+			toxicity = math.Min(0.9, toxicity+0.15)
+		}
+	}
+
+	// --- Hallucination: inverse proxy — longer, relevant completions less likely hallucinated ---
+	hallucination := math.Max(0.05, 0.35-relevance*0.25)
+
+	overall := (coherence + relevance + (1 - hallucination) + (1 - toxicity)) / 4
+
+	clamp := func(v float64) float64 {
+		if v < 0 {
+			return 0
+		}
+		if v > 1 {
+			return 1
+		}
+		return v
+	}
+
+	return storage.EvalResultRow{
+		SpanID:        gs.SpanID,
+		TraceID:       gs.TraceID,
+		Hallucination: clamp(hallucination),
+		Coherence:     clamp(coherence),
+		Relevance:     clamp(relevance),
+		Toxicity:      clamp(toxicity),
+		OverallScore:  clamp(overall),
+		Reasoning:     "Heuristic evaluation (LLM judge unavailable): scored by completion length, keyword overlap, and toxicity scan.",
+		EvaluatedAt:   time.Now().UnixNano(),
+	}
+}
+
+// tokenSet returns a set of lowercase words (≥4 chars) from s.
+func tokenSet(s string) map[string]bool {
+	set := make(map[string]bool)
+	for _, w := range strings.Fields(strings.ToLower(s)) {
+		w = strings.Trim(w, ".,!?;:\"'()[]")
+		if len(w) >= 4 {
+			set[w] = true
+		}
+	}
+	return set
 }

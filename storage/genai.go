@@ -198,18 +198,24 @@ func extractGenAISpan(sp ptrace.Span, entityID, resJSON string) GenAISpanRow {
 	}
 
 	// Extract prompt / completion from span events.
+	// Supports both OTel spec key ("content") and common alternatives
+	// ("gen_ai.prompt" / "gen_ai.completion") used by some SDKs.
 	var prompt, completion string
+	getEventStr := func(ev pcommon.Map, keys ...string) string {
+		for _, k := range keys {
+			if v, ok := ev.Get(k); ok {
+				return v.AsString()
+			}
+		}
+		return ""
+	}
 	for i := 0; i < sp.Events().Len(); i++ {
 		ev := sp.Events().At(i)
 		switch ev.Name() {
 		case "gen_ai.user.message":
-			if v, ok := ev.Attributes().Get("content"); ok {
-				prompt = v.AsString()
-			}
+			prompt = getEventStr(ev.Attributes(), "content", "gen_ai.prompt", "message")
 		case "gen_ai.assistant.message":
-			if v, ok := ev.Attributes().Get("content"); ok {
-				completion = v.AsString()
-			}
+			completion = getEventStr(ev.Attributes(), "content", "gen_ai.completion", "message")
 		}
 	}
 	// Prevent runaway DB growth — truncate at 4 KB.
