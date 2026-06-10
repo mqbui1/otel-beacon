@@ -135,7 +135,7 @@ func main() {
 	// Admin (health + Prometheus) + Query API on :8080
 	// ---------------------------------------------------------------------------
 	adminAddr := envOr("ADMIN_ADDR", ":8080")
-	adminSrv := &http.Server{Addr: adminAddr, Handler: combinedAdmin(store, logger)}
+	adminSrv := &http.Server{Addr: adminAddr, Handler: combinedAdmin(store, expWorker, logger)}
 	go func() {
 		logger.Info("Admin/Query listening", zap.String("addr", adminAddr))
 		if err := adminSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -162,7 +162,7 @@ func main() {
 }
 
 // combinedAdmin merges the admin endpoints and query API onto one mux.
-func combinedAdmin(store *storage.Storage, logger *zap.Logger) http.Handler {
+func combinedAdmin(store *storage.Storage, ew *server.ExperimentWorker, logger *zap.Logger) http.Handler {
 	mux := http.NewServeMux()
 	// Admin endpoints
 	admin := server.NewAdminServer(func() error { return nil })
@@ -170,7 +170,7 @@ func combinedAdmin(store *storage.Storage, logger *zap.Logger) http.Handler {
 	mux.Handle("/readyz", admin)
 	mux.Handle("/metrics", admin)
 	// Query API (spans/metrics/logs/anomalies + entities/topology/entity-signals)
-	query := server.NewQueryServer(store, expWorker, logger)
+	query := server.NewQueryServer(store, ew, logger)
 	mux.Handle("/v1/", query)
 	// UI — must be last (catches everything not matched above)
 	mux.Handle("/", uiHandler())
