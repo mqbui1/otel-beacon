@@ -1,6 +1,6 @@
 # otel-beacon
 
-A lightweight, self-contained OpenTelemetry backend with built-in storage, entity-based correlation, service topology, and an observability UI.
+A lightweight, self-contained OpenTelemetry backend with built-in storage, entity-based correlation, service topology, LLM/GenAI observability, and an observability UI.
 
 Accepts OTLP over gRPC (`:4317`) and HTTP (`:4318`). Stores traces, metrics, and logs in SQLite (or ClickHouse). Serves a full-featured UI on `:8080`.
 
@@ -8,6 +8,7 @@ Accepts OTLP over gRPC (`:4317`) and HTTP (`:4318`). Stores traces, metrics, and
 
 ## Features
 
+### Core observability
 - **OTLP ingest** — gRPC and HTTP receivers, compatible with any OTel SDK or Collector
 - **Storage** — SQLite (default, zero-config) or ClickHouse for higher volume
 - **Anomaly detection** — MAD, Z-score, and EWMA algorithms on metric streams
@@ -17,6 +18,18 @@ Accepts OTLP over gRPC (`:4317`) and HTTP (`:4318`). Stores traces, metrics, and
   - Entity-based correlation: related logs and metrics linked by service identity, not just trace ID
   - SVG service map with call counts, error rates, and avg latency per edge
   - Click any service node to inspect its recent spans, metrics, and logs
+
+### GenAI / LLM observability
+- **GenAI span extraction** — parses `gen_ai.*` semantic convention attributes from any OTel-instrumented LLM call (OpenAI, Anthropic, Bedrock, etc.)
+- **Cost tracking** — per-span token cost using a built-in model pricing table; aggregated by model and agent
+- **LLM-as-judge eval** — async Bedrock-powered scoring on 8 dimensions per span:
+  - Hallucination, Coherence, Relevance, Toxicity
+  - Correctness, Instruction Adherence, Reasoning Coherence, Completeness
+  - Heuristic fallback when Bedrock is unavailable
+- **Sessions** — group multiple traces into multi-turn conversations via `session.id` span attribute; session-level agentic metrics: Action Completion, Agent Efficiency, Conversation Quality
+- **Guardrails** — runtime checks on prompt + completion: PII detection, prompt injection, toxicity, sexism/bias
+- **Agent flow map** — SVG BFS DAG showing agent call graph within a trace
+- **GenAI UI tab** — Agents, Models, Sessions panels + trace waterfall with eval scores and guardrail badges
 
 ---
 
@@ -81,9 +94,23 @@ GET /v1/query/anomalies?limit=
 ### Entity + topology endpoints
 
 ```
-GET /v1/entities?type=service          # all discovered services (or hosts)
-GET /v1/topology                       # service call graph with error rates
+GET /v1/entities?type=service             # all discovered services (or hosts)
+GET /v1/topology                          # service call graph with error rates
 GET /v1/entity/signals?type=service&id=X  # recent spans, metrics, logs for a service
+```
+
+### GenAI endpoints
+
+```
+GET  /v1/genai/spans?trace_id=&agent=&model=&from=&to=&limit=
+GET  /v1/genai/agents?from=&to=
+GET  /v1/genai/costs?from=&to=&group_by=model|agent|service
+GET  /v1/genai/eval?trace_id=&limit=
+GET  /v1/genai/guardrails?trace_id=&limit=
+GET  /v1/genai/trace/{trace_id}           # waterfall: spans + evals + guardrails
+GET  /v1/genai/sessions?entity=&limit=
+GET  /v1/genai/sessions/{session_id}      # session detail: spans + evals
+POST /v1/genai/guardrails/check           # inline guardrail check (JSON body)
 ```
 
 All responses are JSON:
@@ -108,6 +135,39 @@ exporters:
   otlphttp:
     endpoint: http://localhost:4318
 ```
+
+---
+
+## GenAI / LLM observability
+
+Instrument your LLM app with any OTel SDK that emits `gen_ai.*` semantic conventions (e.g. [opentelemetry-instrumentation-anthropic](https://pypi.org/project/opentelemetry-instrumentation-anthropic/), [opentelemetry-instrumentation-openai](https://pypi.org/project/opentelemetry-instrumentation-openai/)).
+
+otel-beacon automatically extracts:
+- `gen_ai.system`, `gen_ai.operation.name`, `gen_ai.request.model`
+- `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`
+- `gen_ai.agent.name`, `gen_ai.tool.name`
+- Prompt and completion from span events (`gen_ai.content.prompt` / `gen_ai.content.completion`)
+
+### Sessions (multi-turn conversations)
+
+Add `session.id` to your root span attributes to group traces into sessions:
+
+```python
+with tracer.start_as_current_span("plan_trip", attributes={"session.id": session_id}):
+    ...
+```
+
+otel-beacon aggregates traces per session and runs session-level LLM-as-judge scoring (Action Completion, Agent Efficiency, Conversation Quality).
+
+### Guardrail check API
+
+```bash
+curl -X POST http://localhost:8080/v1/genai/guardrails/check \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"...", "completion":"...", "trace_id":"abc", "span_id":"xyz"}'
+```
+
+Returns triggered guardrail events (PII, prompt injection, toxicity, sexism/bias).
 
 ---
 
@@ -248,28 +308,37 @@ See [`deploy/deploy-petclinic-k8s.sh`](deploy/deploy-petclinic-k8s.sh) for the f
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────┐
-│                     otel-beacon                      │
-│                                                      │
-│  OTLP/gRPC :4317 ──┐                                 │
-│  OTLP/HTTP :4318 ──┼──► Storage (async queue)        │
-│                    │     ├─ Span worker               │
-│                    │     ├─ Metric worker + anomaly   │
-│                    │     ├─ Log worker                │
-│                    │     ├─ Entity extractor          │
-│                    │     └─ Topology worker (2 min)   │
-│                    │           │                      │
-│                    │     SQLite / ClickHouse          │
-│                    │           │                      │
-│  Admin :8080 ──────┼──► Query API + UI                │
-│                    │     ├─ /v1/query/*               │
-│                    │     ├─ /v1/entities              │
-│                    │     ├─ /v1/topology              │
-│                    │     └─ /v1/entity/signals        │
-└──────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                        otel-beacon                          │
+│                                                             │
+│  OTLP/gRPC :4317 ──┐                                        │
+│  OTLP/HTTP :4318 ──┼──► Storage (async queue)               │
+│                    │     ├─ Span worker                      │
+│                    │     ├─ Metric worker + anomaly          │
+│                    │     ├─ Log worker                       │
+│                    │     ├─ Entity extractor                 │
+│                    │     ├─ Topology worker (2 min)          │
+│                    │     └─ GenAI worker                     │
+│                    │           ├─ span extraction            │
+│                    │           ├─ cost calc                  │
+│                    │           ├─ guardrail checks           │
+│                    │           └─ session aggregation        │
+│                    │                    │                    │
+│                    │     Eval workers (async, Bedrock)       │
+│                    │           ├─ span eval (8 dimensions)   │
+│                    │           └─ session eval (agentic)     │
+│                    │                    │                    │
+│                    │     SQLite / ClickHouse                 │
+│                    │                    │                    │
+│  Admin :8080 ──────┼──► Query API + UI                       │
+│                    │     ├─ /v1/query/*                      │
+│                    │     ├─ /v1/entities, /v1/topology       │
+│                    │     └─ /v1/genai/*                      │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 - Single Go binary, ~15 MB Docker image
 - SQLite with WAL mode, single writer, batch transactions
 - Topology refreshed every 2 minutes via cross-service span JOIN
 - Entity registry updated on every span batch flush
+- GenAI eval runs async via Bedrock; heuristic fallback when AWS credentials unavailable
