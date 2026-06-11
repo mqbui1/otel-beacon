@@ -188,6 +188,14 @@ type Backend interface {
 	QuerySessions(ctx context.Context, entityID string, limit int) ([]SessionRow, error)
 	QuerySession(ctx context.Context, sessionID string) (*SessionRow, error)
 
+	// Custom Metrics + Autotune
+	CreateCustomMetric(ctx context.Context, m CustomMetricDef) error
+	ListCustomMetrics(ctx context.Context) ([]CustomMetricDef, error)
+	SaveCustomMetricResult(ctx context.Context, r CustomMetricResult) error
+	QueryCustomMetricResults(ctx context.Context, spanID, metricID string, limit int) ([]CustomMetricResult, error)
+	SaveEvalFeedback(ctx context.Context, f EvalFeedback) error
+	QueryEvalFeedback(ctx context.Context, spanID string) ([]EvalFeedback, error)
+
 	// Datasets + Experiments
 	CreateDataset(ctx context.Context, meta DatasetMeta, rows []DatasetRow) error
 	ListDatasets(ctx context.Context, entityID string, limit int) ([]DatasetMeta, error)

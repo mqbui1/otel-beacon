@@ -554,3 +554,19 @@ func (b *ClickHouseBackend) FinalizeExperiment(_ context.Context, _ ExperimentRo
 func (b *ClickHouseBackend) GetExperimentResults(_ context.Context, _ string) ([]ExperimentResult, error) {
 	return nil, nil
 }
+func (b *ClickHouseBackend) CreateCustomMetric(_ context.Context, _ CustomMetricDef) error {
+	return nil
+}
+func (b *ClickHouseBackend) ListCustomMetrics(_ context.Context) ([]CustomMetricDef, error) {
+	return nil, nil
+}
+func (b *ClickHouseBackend) SaveCustomMetricResult(_ context.Context, _ CustomMetricResult) error {
+	return nil
+}
+func (b *ClickHouseBackend) QueryCustomMetricResults(_ context.Context, _, _ string, _ int) ([]CustomMetricResult, error) {
+	return nil, nil
+}
+func (b *ClickHouseBackend) SaveEvalFeedback(_ context.Context, _ EvalFeedback) error { return nil }
+func (b *ClickHouseBackend) QueryEvalFeedback(_ context.Context, _ string) ([]EvalFeedback, error) {
+	return nil, nil
+}

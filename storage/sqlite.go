@@ -1041,4 +1041,38 @@ CREATE TABLE IF NOT EXISTS experiment_results (
     created_at            INTEGER DEFAULT (unixepoch())
 );
 CREATE INDEX IF NOT EXISTS idx_exp_results_exp ON experiment_results(experiment_id);
+CREATE TABLE IF NOT EXISTS custom_metrics (
+    metric_id   TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    prompt      TEXT NOT NULL,
+    output_type TEXT DEFAULT 'boolean',
+    apply_to    TEXT DEFAULT 'span',
+    action      TEXT DEFAULT 'alert',
+    created_at  INTEGER DEFAULT (unixepoch())
+);
+CREATE TABLE IF NOT EXISTS custom_metric_results (
+    result_id    TEXT PRIMARY KEY,
+    metric_id    TEXT,
+    metric_name  TEXT,
+    span_id      TEXT,
+    trace_id     TEXT,
+    value_bool   INTEGER,
+    value_score  REAL DEFAULT 0,
+    reasoning    TEXT DEFAULT '',
+    evaluated_at INTEGER DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_cmr_metric ON custom_metric_results(metric_id);
+CREATE INDEX IF NOT EXISTS idx_cmr_span   ON custom_metric_results(span_id);
+CREATE INDEX IF NOT EXISTS idx_cmr_trace  ON custom_metric_results(trace_id);
+CREATE TABLE IF NOT EXISTS eval_feedback (
+    feedback_id      TEXT PRIMARY KEY,
+    span_id          TEXT,
+    metric_name      TEXT,
+    original_value   REAL DEFAULT 0,
+    corrected_value  REAL,
+    rationale        TEXT DEFAULT '',
+    created_at       INTEGER DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_span ON eval_feedback(span_id);
 `

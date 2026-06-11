@@ -283,6 +283,8 @@ func StartEvalWorker(ctx context.Context, store *storage.Storage, logger *zap.Lo
 				if err := store.FlushEvalResults(ctx, []storage.EvalResultRow{result}); err != nil {
 					logger.Debug("eval worker: flush failed", zap.Error(err))
 				}
+				// Run any user-defined custom metrics against this span.
+				go EvalCustomMetricsForSpan(ctx, gs, client, modelID, store, logger)
 			}
 		}
 	}()

@@ -406,6 +406,10 @@ func (s *Storage) QueryEvalResults(ctx context.Context, traceID string, lim int)
 	return s.backend.QueryEvalResults(ctx, traceID, lim)
 }
 
+func (s *Storage) FlushGuardrailEvents(ctx context.Context, batch []GuardrailEventRow) error {
+	return s.backend.FlushGuardrailEvents(ctx, batch)
+}
+
 func (s *Storage) QueryGuardrailEvents(ctx context.Context, traceID string, lim int) ([]GuardrailEventRow, error) {
 	return s.backend.QueryGuardrailEvents(ctx, traceID, lim)
 }

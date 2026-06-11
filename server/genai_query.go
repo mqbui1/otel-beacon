@@ -24,10 +24,15 @@ func registerGenAIRoutes(mux *http.ServeMux, store *storage.Storage, ew *Experim
 	mux.HandleFunc("/v1/genai/trace/", g.traceWaterfall)   // /v1/genai/trace/{trace_id}
 	mux.HandleFunc("/v1/genai/sessions", g.sessions)        // GET /v1/genai/sessions?entity=&limit=
 	mux.HandleFunc("/v1/genai/sessions/", g.sessionDetail)  // GET /v1/genai/sessions/{session_id}
-	mux.HandleFunc("/v1/datasets", g.datasets)              // GET list / POST create
-	mux.HandleFunc("/v1/datasets/", g.datasetDetail)        // GET /v1/datasets/{id}
-	mux.HandleFunc("/v1/experiments", g.experiments)        // GET list / POST create
-	mux.HandleFunc("/v1/experiments/", g.experimentDetail)  // GET /v1/experiments/{id}
+	mux.HandleFunc("/v1/datasets", g.datasets)                          // GET list / POST create
+	mux.HandleFunc("/v1/datasets/", g.datasetDetail)                    // GET /v1/datasets/{id}
+	mux.HandleFunc("/v1/experiments", g.experiments)                    // GET list / POST create
+	mux.HandleFunc("/v1/experiments/", g.experimentDetail)              // GET /v1/experiments/{id}
+	// Custom metrics + autotune
+	mux.HandleFunc("/v1/genai/custom-metrics", g.customMetrics)         // GET list / POST create
+	mux.HandleFunc("/v1/genai/custom-metrics/run/", g.runCustomMetric)  // POST /v1/genai/custom-metrics/run/{id}
+	mux.HandleFunc("/v1/genai/custom-metrics/results", g.customMetricResults) // GET results
+	mux.HandleFunc("/v1/genai/eval/feedback", g.evalFeedback)           // GET/POST feedback
 }
 
 type genaiServer struct {
@@ -342,5 +347,117 @@ func (g *genaiServer) experimentDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"experiment": exp, "results": results})
+}
+
+// ---------------------------------------------------------------------------
+// Custom Metrics
+// ---------------------------------------------------------------------------
+
+// GET /v1/genai/custom-metrics   POST /v1/genai/custom-metrics
+func (g *genaiServer) customMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var req storage.CustomMetricDef
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Name == "" || req.Prompt == "" {
+			http.Error(w, "name and prompt are required", http.StatusBadRequest)
+			return
+		}
+		if req.OutputType == "" {
+			req.OutputType = "boolean"
+		}
+		if req.ApplyTo == "" {
+			req.ApplyTo = "span"
+		}
+		if req.Action == "" {
+			req.Action = "alert"
+		}
+		req.MetricID = fmt.Sprintf("cm-%d", time.Now().UnixNano())
+		if err := g.store.CreateCustomMetric(r.Context(), req); err != nil {
+			writeJSON(w, nil, err, g.logger)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(req)
+		return
+	}
+	metrics, err := g.store.ListCustomMetrics(r.Context())
+	writeJSON(w, metrics, err, g.logger)
+}
+
+// POST /v1/genai/custom-metrics/run/{metric_id}?limit=50
+func (g *genaiServer) runCustomMetric(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	metricID := strings.TrimPrefix(r.URL.Path, "/v1/genai/custom-metrics/run/")
+	if metricID == "" {
+		http.Error(w, "missing metric_id", http.StatusBadRequest)
+		return
+	}
+	metrics, err := g.store.ListCustomMetrics(r.Context())
+	if err != nil {
+		writeJSON(w, nil, err, g.logger)
+		return
+	}
+	var target *storage.CustomMetricDef
+	for i := range metrics {
+		if metrics[i].MetricID == metricID {
+			target = &metrics[i]
+			break
+		}
+	}
+	if target == nil {
+		http.Error(w, "metric not found", http.StatusNotFound)
+		return
+	}
+	limit := parseInt(r.URL.Query().Get("limit"))
+	results, err := RunCustomMetricOnRecentSpans(r.Context(), *target, g.store, g.logger, limit)
+	writeJSON(w, results, err, g.logger)
+}
+
+// GET /v1/genai/custom-metrics/results?span_id=&metric_id=&limit=
+func (g *genaiServer) customMetricResults(w http.ResponseWriter, r *http.Request) {
+	spanID := r.URL.Query().Get("span_id")
+	metricID := r.URL.Query().Get("metric_id")
+	limit := parseInt(r.URL.Query().Get("limit"))
+	rows, err := g.store.QueryCustomMetricResults(r.Context(), spanID, metricID, limit)
+	writeJSON(w, rows, err, g.logger)
+}
+
+// ---------------------------------------------------------------------------
+// Autotune / Eval Feedback
+// ---------------------------------------------------------------------------
+
+// GET  /v1/genai/eval/feedback?span_id=
+// POST /v1/genai/eval/feedback  body: EvalFeedback JSON
+func (g *genaiServer) evalFeedback(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var req storage.EvalFeedback
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.SpanID == "" || req.MetricName == "" {
+			http.Error(w, "span_id and metric_name are required", http.StatusBadRequest)
+			return
+		}
+		req.FeedbackID = fmt.Sprintf("fb-%d", time.Now().UnixNano())
+		if err := g.store.SaveEvalFeedback(r.Context(), req); err != nil {
+			writeJSON(w, nil, err, g.logger)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(req)
+		return
+	}
+	spanID := r.URL.Query().Get("span_id")
+	rows, err := g.store.QueryEvalFeedback(r.Context(), spanID)
+	writeJSON(w, rows, err, g.logger)
 }
 

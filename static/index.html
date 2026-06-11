@@ -1011,6 +1011,7 @@
             <button class="genai-tab-btn" onclick="switchGenAITab('models',this)">Models</button>
             <button class="genai-tab-btn" onclick="switchGenAITab('sessions',this)">Sessions</button>
             <button class="genai-tab-btn" onclick="switchGenAITab('experiments',this)">Experiments</button>
+            <button class="genai-tab-btn" onclick="switchGenAITab('custom-metrics',this)">Metrics</button>
           </div>
         </div>
         <div class="genai-tab-pane active" id="g-pane-agents">
@@ -1107,6 +1108,58 @@
             </div>
             <div id="g-exp-results-body" style="max-height:280px;overflow-y:auto"></div>
           </div>
+        </div>
+      </div>
+
+      <!-- ── Custom Metrics pane ── -->
+      <div class="genai-tab-pane" id="g-pane-custom-metrics">
+        <div style="padding:10px 12px;border-bottom:1px solid var(--border)">
+          <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">New Custom Metric</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
+            <div>
+              <div style="font-size:10px;color:var(--muted);margin-bottom:3px">Name</div>
+              <input id="cm-name" type="text" placeholder="e.g. Duration Mismatch"
+                style="width:100%;padding:4px 8px;font-size:11px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text);box-sizing:border-box">
+            </div>
+            <div>
+              <div style="font-size:10px;color:var(--muted);margin-bottom:3px">Output Type</div>
+              <select id="cm-output-type" style="width:100%;padding:4px 8px;font-size:11px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text)">
+                <option value="boolean">Boolean (true/false)</option>
+                <option value="score">Score (0–1)</option>
+              </select>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
+            <div>
+              <div style="font-size:10px;color:var(--muted);margin-bottom:3px">Action when fired</div>
+              <select id="cm-action" style="width:100%;padding:4px 8px;font-size:11px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text)">
+                <option value="alert">Alert (signal only)</option>
+                <option value="block">Block (guardrail)</option>
+              </select>
+            </div>
+            <div>
+              <div style="font-size:10px;color:var(--muted);margin-bottom:3px">Apply to</div>
+              <select id="cm-apply-to" style="width:100%;padding:4px 8px;font-size:11px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text)">
+                <option value="span">Span</option>
+                <option value="session">Session</option>
+              </select>
+            </div>
+          </div>
+          <div style="margin-bottom:6px">
+            <div style="font-size:10px;color:var(--muted);margin-bottom:3px">Evaluation Prompt <span style="color:var(--muted)">(describe the condition — return true when it applies)</span></div>
+            <textarea id="cm-prompt" rows="3" placeholder="e.g. Return true if the activities planning prompt refers to a week-long trip but the itinerary is for fewer than 3 days."
+              style="width:100%;padding:4px 8px;font-size:11px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text);box-sizing:border-box;resize:vertical"></textarea>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button onclick="createCustomMetric()"
+              style="padding:5px 14px;font-size:11px;font-weight:600;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer">
+              Create Metric
+            </button>
+          </div>
+        </div>
+        <!-- Metric list -->
+        <div id="g-custom-metrics-list" style="max-height:360px;overflow-y:auto">
+          <div class="empty" style="padding:24px">No custom metrics yet.</div>
         </div>
       </div>
 
@@ -3127,8 +3180,9 @@ let _genaiCosts = [];
 let _genaiEvals = {};    // span_id → EvalResultRow
 let _genaiGuards = {};   // span_id → [GuardrailEventRow]
 let _genaiSessions = [];     // SessionRow[]
-let _genaiDatasets = [];     // DatasetMeta[]
-let _genaiExperiments = [];  // ExperimentRow[]
+let _genaiDatasets = [];       // DatasetMeta[]
+let _genaiExperiments = [];    // ExperimentRow[]
+let _genaiCustomMetrics = [];  // CustomMetricDef[]
 let _selectedSessionId = null;
 let _selectedTraceId = null;
 
@@ -3148,7 +3202,7 @@ async function loadGenAI() {
   if (agent) params.set('agent', agent);
   if (model) params.set('model', model);
 
-  const [spansRes, agentsRes, costsRes, evalRes, guardsRes, sessionsRes, expRes, dsRes] = await Promise.all([
+  const [spansRes, agentsRes, costsRes, evalRes, guardsRes, sessionsRes, expRes, dsRes, cmRes] = await Promise.all([
     api('/v1/genai/spans?' + params),
     api('/v1/genai/agents'),
     api('/v1/genai/costs?group_by=model'),
@@ -3157,14 +3211,16 @@ async function loadGenAI() {
     api('/v1/genai/sessions?limit=100'),
     api('/v1/experiments?limit=50'),
     api('/v1/datasets?limit=50'),
+    api('/v1/genai/custom-metrics'),
   ]);
 
   _genaiSpans    = (spansRes?.data  || []).filter(s => !service || s.entity_id === service);
   _genaiAgents   = agentsRes?.data  || [];
   _genaiCosts    = costsRes?.data   || [];
-  _genaiSessions    = sessionsRes?.data || [];
-  _genaiExperiments = expRes?.data    || [];
-  _genaiDatasets    = dsRes?.data     || [];
+  _genaiSessions      = sessionsRes?.data  || [];
+  _genaiExperiments   = expRes?.data       || [];
+  _genaiDatasets      = dsRes?.data        || [];
+  _genaiCustomMetrics = cmRes?.data        || [];
 
   // Index evals and guardrails by span_id for O(1) lookup
   _genaiEvals  = {};
@@ -3180,6 +3236,7 @@ async function loadGenAI() {
   renderGenAITraceList();
   renderGenAISessions();
   renderGenAIExperiments();
+  renderCustomMetrics();
 }
 
 function renderGenAIStats() {
@@ -3475,6 +3532,128 @@ async function openExperiment(expId) {
 }
 
 function truncStr(s, n) { return s.length > n ? s.slice(0, n) + '…' : s; }
+
+// ---------------------------------------------------------------------------
+// Custom Metrics + Autotune
+// ---------------------------------------------------------------------------
+
+function renderCustomMetrics() {
+  const list = document.getElementById('g-custom-metrics-list');
+  if (!list) return;
+  if (!_genaiCustomMetrics.length) {
+    list.innerHTML = '<div class="empty" style="padding:24px">No custom metrics yet. Create one above.</div>';
+    return;
+  }
+  const actionBadge = a => a === 'block'
+    ? `<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(239,68,68,.2);color:#ef4444;border:1px solid rgba(239,68,68,.3)">BLOCK</span>`
+    : `<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(99,102,241,.2);color:#818cf8;border:1px solid rgba(99,102,241,.3)">ALERT</span>`;
+  const typeBadge = t => `<span style="font-size:9px;padding:1px 5px;border-radius:3px;background:rgba(255,255,255,.06);color:var(--muted)">${t}</span>`;
+  list.innerHTML = _genaiCustomMetrics.map(m => `
+    <div style="padding:10px 12px;border-bottom:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;font-weight:600;margin-bottom:3px">${esc(m.name)}</div>
+          <div style="font-size:10px;color:var(--muted);margin-bottom:6px;line-height:1.5">${esc(truncStr(m.prompt, 120))}</div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap">${typeBadge(m.output_type)} ${typeBadge(m.apply_to)} ${actionBadge(m.action)}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+          <button onclick="runCustomMetric('${esc(m.metric_id)}')"
+            style="padding:4px 10px;font-size:10px;font-weight:600;background:rgba(99,102,241,.15);color:#818cf8;border:1px solid rgba(99,102,241,.3);border-radius:4px;cursor:pointer">
+            Run
+          </button>
+          <button onclick="showCustomMetricResults('${esc(m.metric_id)}')"
+            style="padding:4px 10px;font-size:10px;color:var(--muted);background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer">
+            Results
+          </button>
+        </div>
+      </div>
+      <div id="cm-results-${esc(m.metric_id)}" style="display:none;margin-top:8px"></div>
+    </div>`).join('');
+}
+
+async function createCustomMetric() {
+  const name   = (document.getElementById('cm-name')?.value   || '').trim();
+  const prompt = (document.getElementById('cm-prompt')?.value || '').trim();
+  if (!name || !prompt) { alert('Name and prompt are required'); return; }
+  const body = {
+    name,
+    prompt,
+    output_type: document.getElementById('cm-output-type')?.value || 'boolean',
+    apply_to:    document.getElementById('cm-apply-to')?.value    || 'span',
+    action:      document.getElementById('cm-action')?.value      || 'alert',
+  };
+  const res = await api('/v1/genai/custom-metrics', {method:'POST', body: JSON.stringify(body)});
+  if (!res) return;
+  document.getElementById('cm-name').value   = '';
+  document.getElementById('cm-prompt').value = '';
+  _genaiCustomMetrics.unshift(res);
+  renderCustomMetrics();
+}
+
+async function runCustomMetric(metricID) {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+  try {
+    const res = await api(`/v1/genai/custom-metrics/run/${metricID}?limit=50`, {method:'POST', body:'{}'});
+    const count = res?.count || (res?.data?.length) || 0;
+    const fired = (res?.data || []).filter(r => r.value_bool === true).length;
+    btn.textContent = `${fired}/${count} fired`;
+    setTimeout(() => { btn.disabled = false; btn.textContent = 'Run'; }, 3000);
+    showCustomMetricResults(metricID);
+  } catch(e) {
+    btn.textContent = 'Error';
+    setTimeout(() => { btn.disabled = false; btn.textContent = 'Run'; }, 2000);
+  }
+}
+
+async function showCustomMetricResults(metricID) {
+  const panel = document.getElementById('cm-results-' + metricID);
+  if (!panel) return;
+  if (panel.style.display !== 'none') { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  panel.innerHTML = '<div style="font-size:10px;color:var(--muted)">Loading…</div>';
+  const res = await api(`/v1/genai/custom-metrics/results?metric_id=${metricID}&limit=50`);
+  const rows = res?.data || [];
+  if (!rows.length) { panel.innerHTML = '<div style="font-size:10px;color:var(--muted)">No results yet — click Run.</div>'; return; }
+  const firedCount = rows.filter(r => r.value_bool === true || r.value_score >= 0.5).length;
+  panel.innerHTML = `
+    <div style="font-size:10px;color:var(--muted);margin-bottom:6px">${firedCount}/${rows.length} spans triggered</div>
+    <div style="max-height:200px;overflow-y:auto">
+    ${rows.slice(0,20).map(r => {
+      const fired = r.value_bool === true || r.value_score >= 0.5;
+      const dot = fired
+        ? `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#ef4444;flex-shrink:0"></span>`
+        : `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.15);flex-shrink:0"></span>`;
+      return `<div style="display:flex;gap:6px;align-items:flex-start;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.04)">
+        ${dot}
+        <div style="flex:1;min-width:0">
+          <div style="font-size:10px;font-family:monospace;color:var(--muted)">${r.span_id.slice(-8)}</div>
+          <div style="font-size:10px;color:var(--text);margin-top:1px">${esc(truncStr(r.reasoning||'',100))}</div>
+        </div>
+      </div>`;
+    }).join('')}
+    </div>`;
+}
+
+// Autotune: submit human feedback on an eval score
+async function submitEvalFeedback(spanID, metricName, originalValue, btn) {
+  const rationale = prompt(`Correct value for "${metricName}" (0–1, or leave blank to mark as "doesn't apply"):\nOriginal: ${originalValue.toFixed ? originalValue.toFixed(2) : originalValue}`);
+  if (rationale === null) return; // cancelled
+  const correctedStr = rationale.trim();
+  const correctedValue = correctedStr === '' ? null : parseFloat(correctedStr);
+  const body = {
+    span_id:         spanID,
+    metric_name:     metricName,
+    original_value:  originalValue,
+    corrected_value: isNaN(correctedValue) ? null : correctedValue,
+    rationale:       correctedStr,
+  };
+  const res = await api('/v1/genai/eval/feedback', {method:'POST', body: JSON.stringify(body)});
+  if (res) {
+    if (btn) { btn.style.color = 'var(--green)'; btn.title = 'Feedback submitted'; }
+  }
+}
 
 function showDatasetUpload() {
   const p = document.getElementById('dataset-upload-panel');
@@ -3814,10 +3993,12 @@ function renderAISpanDetailInner(span, ev, guards) {
       const col  = higherBetter
         ? (pct>=75?'var(--green)':pct>=50?'var(--yellow)':'var(--red)')
         : (pct<=25?'var(--green)':pct<=50?'var(--yellow)':'var(--red)');
-      return `<div class="ai-score-row">
+      return `<div class="ai-score-row" style="align-items:center">
         <span style="color:var(--muted);min-width:130px;font-size:11px">${lbl}</span>
         <div class="ai-score-bar-wrap"><div class="ai-score-bar" style="width:${barW}%;background:${col}"></div></div>
         <span style="font-family:monospace;font-size:11px;min-width:32px;text-align:right;color:${col}">${(val||0).toFixed(2)}</span>
+        <button onclick="submitEvalFeedback('${ev.span_id}','${lbl}',${val||0},this)" title="Correct this score"
+          style="margin-left:4px;padding:0 4px;font-size:9px;background:none;border:1px solid rgba(255,255,255,.1);border-radius:3px;color:var(--muted);cursor:pointer;line-height:16px">✎</button>
       </div>`;
     }).join('')}
     ${ev.reasoning ? `<div style="font-size:10px;color:var(--muted);margin-top:8px;font-style:italic">${esc(ev.reasoning)}</div>` : ''}
@@ -3848,6 +4029,8 @@ function renderAISpanDetailInner(span, ev, guards) {
     <div class="ai-detail-col">
       <h4 style="margin-bottom:10px">Quality Evaluation</h4>${evalHTML}
       <h4 style="margin-top:14px;margin-bottom:8px">Guardrail Checks</h4>${guardsHTML}
+      ${_genaiCustomMetrics.length ? `<h4 style="margin-top:14px;margin-bottom:6px">Custom Signals</h4>
+      <div id="cm-signals-${span.span_id}" style="font-size:10px;color:var(--muted)">Loading…</div>` : ''}
     </div>
   </div>`;
 }
@@ -3858,6 +4041,31 @@ function toggleAISpanDetail(spanId) {
   if (!detail) return;
   const open = detail.classList.toggle('open');
   row?.classList.toggle('expanded', open);
+  if (open) loadCustomSignalsForSpan(spanId);
+}
+
+async function loadCustomSignalsForSpan(spanId) {
+  const el = document.getElementById('cm-signals-' + spanId);
+  if (!el) return;
+  const res = await api(`/v1/genai/custom-metrics/results?span_id=${spanId}&limit=20`);
+  const rows = res?.data || [];
+  if (!rows.length) {
+    el.textContent = _genaiCustomMetrics.length ? 'No results — run metrics first.' : 'No custom metrics defined.';
+    return;
+  }
+  el.innerHTML = rows.map(r => {
+    const fired = r.value_bool === true || r.value_score >= 0.5;
+    const dot = fired
+      ? `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#ef4444;margin-right:5px;flex-shrink:0;margin-top:3px"></span>`
+      : `<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.2);margin-right:5px;flex-shrink:0;margin-top:3px"></span>`;
+    return `<div style="display:flex;align-items:flex-start;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04)">
+      ${dot}
+      <div>
+        <span style="font-weight:600;color:${fired?'#ef4444':'var(--muted)'}">${esc(r.metric_name)}</span>
+        <span style="color:var(--muted);margin-left:4px">${esc(truncStr(r.reasoning||'',80))}</span>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
