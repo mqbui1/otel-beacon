@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -165,6 +166,11 @@ func (g *genaiServer) sessionDetail(w http.ResponseWriter, r *http.Request) {
 
 // POST /v1/genai/guardrails/check
 // Body: {"prompt":"…","completion":"…","trace_id":"…","span_id":"…"}
+//
+// Two-phase check:
+//  1. Hardcoded regex checks (PII, prompt injection, toxicity) — always fast, no LLM.
+//  2. Custom metrics with action=block — run in parallel via LLM with a 5 s budget.
+//     Fail-open: if LLM is unavailable or times out the request is NOT blocked.
 func (g *genaiServer) guardrailCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
@@ -175,7 +181,16 @@ func (g *genaiServer) guardrailCheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	// Phase 1: hardcoded regex checks — synchronous, no LLM.
 	resp := storage.RunGuardrailCheck(req)
+
+	// Phase 2: custom block metrics — parallel LLM, 5 s budget.
+	if customEvents := runCustomBlockChecks(r.Context(), req, g.store, g.logger); len(customEvents) > 0 {
+		resp.Events = append(resp.Events, customEvents...)
+		resp.Triggered = true
+	}
+
 	writeJSON(w, resp, nil, g.logger)
 }
 
@@ -459,5 +474,83 @@ func (g *genaiServer) evalFeedback(w http.ResponseWriter, r *http.Request) {
 	spanID := r.URL.Query().Get("span_id")
 	rows, err := g.store.QueryEvalFeedback(r.Context(), spanID)
 	writeJSON(w, rows, err, g.logger)
+}
+
+// ---------------------------------------------------------------------------
+// runCustomBlockChecks — Phase 2 of guardrail check.
+//
+// Loads all custom metrics with action=block, runs them concurrently against
+// the request prompt/completion with a 5-second shared timeout, and returns
+// any triggered GuardrailEventRows. Fails open: LLM errors are silently
+// ignored so a slow or unavailable model never blocks the request.
+// ---------------------------------------------------------------------------
+
+func runCustomBlockChecks(ctx context.Context, req storage.CheckGuardrailsRequest,
+	store *storage.Storage, logger *zap.Logger) []storage.GuardrailEventRow {
+
+	metrics, err := store.ListCustomMetrics(ctx)
+	if err != nil {
+		return nil
+	}
+
+	var blockMetrics []storage.CustomMetricDef
+	for _, m := range metrics {
+		if m.Action == "block" && m.ApplyTo == "span" {
+			blockMetrics = append(blockMetrics, m)
+		}
+	}
+	if len(blockMetrics) == 0 {
+		return nil
+	}
+
+	gs := storage.GenAISpanRow{
+		SpanID:     req.SpanID,
+		TraceID:    req.TraceID,
+		Prompt:     req.Prompt,
+		Completion: req.Completion,
+	}
+
+	// Shared 5-second budget across all custom metrics.
+	evalCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	type item struct{ event *storage.GuardrailEventRow }
+	ch := make(chan item, len(blockMetrics))
+
+	for _, m := range blockMetrics {
+		m := m
+		go func() {
+			result := runCustomMetricEval(evalCtx, m, gs, nil, "")
+			if result.ValueBool != nil && *result.ValueBool {
+				ch <- item{event: &storage.GuardrailEventRow{
+					TraceID:   gs.TraceID,
+					SpanID:    gs.SpanID,
+					CheckType: "custom_metric:" + m.Name,
+					Triggered: true,
+					Severity:  "high",
+					Detail:    "[block] " + result.Reasoning,
+					CheckedAt: time.Now().UnixNano(),
+				}}
+			} else {
+				ch <- item{event: nil}
+			}
+		}()
+	}
+
+	var events []storage.GuardrailEventRow
+	for range blockMetrics {
+		if it := <-ch; it.event != nil {
+			events = append(events, *it.event)
+		}
+	}
+
+	if len(events) > 0 {
+		logger.Info("custom block metrics triggered",
+			zap.Int("count", len(events)),
+			zap.String("span_id", req.SpanID))
+		// Persist the violations for observability.
+		_ = store.FlushGuardrailEvents(ctx, events)
+	}
+	return events
 }
 

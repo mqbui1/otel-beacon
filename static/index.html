@@ -405,7 +405,7 @@
       font-size: 11px; font-weight: 600; color: var(--muted);
       text-transform: uppercase; letter-spacing: .06em;
     }
-    .genai-tabs { display: flex; gap: 0; }
+    .genai-tabs { display: flex; gap: 0; flex-wrap: wrap; }
     .genai-tab-btn {
       padding: 5px 12px; font-size: 11px; font-weight: 600; cursor: pointer;
       color: var(--muted); border: none; background: none;
@@ -1115,7 +1115,7 @@
       <div class="genai-tab-pane" id="g-pane-custom-metrics">
         <div style="padding:10px 12px;border-bottom:1px solid var(--border)">
           <div style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">New Custom Metric</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;margin-bottom:6px;align-items:end">
             <div>
               <div style="font-size:10px;color:var(--muted);margin-bottom:3px">Name</div>
               <input id="cm-name" type="text" placeholder="e.g. Duration Mismatch"
@@ -1128,12 +1128,10 @@
                 <option value="score">Score (0–1)</option>
               </select>
             </div>
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:6px">
             <div>
-              <div style="font-size:10px;color:var(--muted);margin-bottom:3px">Action when fired</div>
+              <div style="font-size:10px;color:var(--muted);margin-bottom:3px">Action</div>
               <select id="cm-action" style="width:100%;padding:4px 8px;font-size:11px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text)">
-                <option value="alert">Alert (signal only)</option>
+                <option value="alert">Alert only</option>
                 <option value="block">Block (guardrail)</option>
               </select>
             </div>
