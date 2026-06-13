@@ -209,10 +209,15 @@ type IncidentOut struct {
 	AnomalyCount int            `json:"anomaly_count"`
 	LatestTs     int64          `json:"latest_ts"`
 	EarliestTs   int64          `json:"earliest_ts"`
+	Resolved     bool           `json:"resolved"` // true when no new anomaly fired in last 5 min
 }
+
+// resolvedThresholdNs — incident is resolved if latest anomaly is older than this.
+const resolvedThresholdNs = int64(5 * 60 * 1e9)
 
 // signalPriority maps signal types to priority scores for incident ranking.
 var signalPriority = map[string]int{
+	"missing_service": 6,
 	"error_signature": 5,
 	"span_error_rate": 4,
 	"trace_drift":     3,
@@ -275,6 +280,7 @@ func (s *queryServer) incidents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	nowNs := time.Now().UnixNano()
 	out := make([]IncidentOut, 0, len(inc))
 	for k, d := range inc {
 		out = append(out, IncidentOut{
@@ -286,6 +292,7 @@ func (s *queryServer) incidents(w http.ResponseWriter, r *http.Request) {
 			AnomalyCount: d.count,
 			LatestTs:     d.latestTs,
 			EarliestTs:   d.earliestTs,
+			Resolved:     nowNs-d.latestTs > resolvedThresholdNs,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

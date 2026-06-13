@@ -2111,36 +2111,43 @@ async function loadIncidents() {
     b.priority !== a.priority ? b.priority - a.priority : b.latest_ts - a.latest_ts
   );
 
-  const critCount     = collapsed.filter(i => i.severity === 'critical').length;
-  const entitySet     = new Set(collapsed.map(i => i.entity_id));
-  const errSigCount   = collapsed.filter(i => (i.signals?.error_signature || 0) > 0).length;
-  const traceDriftCnt = collapsed.filter(i => (i.signals?.trace_drift || 0) > 0).length;
+  const active   = collapsed.filter(i => !i.resolved);
+  const resolved = collapsed.filter(i => i.resolved);
 
-  document.getElementById('s-inc-count').textContent    = collapsed.length;
+  const critCount     = active.filter(i => i.severity === 'critical').length;
+  const entitySet     = new Set(active.map(i => i.entity_id));
+  const errSigCount   = active.filter(i => (i.signals?.error_signature || 0) > 0).length;
+  const traceDriftCnt = active.filter(i => (i.signals?.trace_drift || 0) > 0).length;
+
+  document.getElementById('s-inc-count').textContent    = active.length;
   document.getElementById('s-inc-crit').textContent     = critCount;
   document.getElementById('s-inc-entities').textContent = entitySet.size;
   document.getElementById('s-inc-errsig').textContent   = errSigCount;
   document.getElementById('s-inc-trace').textContent    = traceDriftCnt;
 
   const tbody = document.getElementById('incidents-body');
-  if (!collapsed.length) {
+  if (!active.length && !resolved.length) {
     tbody.innerHTML = '<tr><td colspan="4" class="empty" style="padding:16px;text-align:center">No incidents yet — detectors warm up after ~8 min of data.</td></tr>';
     return;
   }
 
-  tbody.innerHTML = collapsed.map(inc => {
-    const sevCls = inc.severity === 'critical' ? 'b-high' : 'b-med';
+  function incRow(inc, isResolved) {
+    const rowStyle = isResolved
+      ? 'opacity:0.45;border-bottom:1px solid rgba(255,255,255,.03)'
+      : 'border-bottom:1px solid rgba(255,255,255,.04)';
+    const sevCls = isResolved ? 'b-info' : (inc.severity === 'critical' ? 'b-high' : 'b-med');
+    const sevLabel = isResolved ? '✓ resolved' : inc.severity;
     const sigBadges = Object.entries(inc.signals || {})
       .sort(([a],[b]) => (SIGNAL_PRIORITY[b]||0) - (SIGNAL_PRIORITY[a]||0))
       .map(([sig, cnt]) => {
-        const cls = SIGNAL_BADGE[sig] || 'b-info';
+        const cls = isResolved ? 'b-info' : (SIGNAL_BADGE[sig] || 'b-info');
         const lbl = SIGNAL_LABELS[sig] || sig;
         return `<span class="badge ${cls}" style="margin-right:2px;font-size:9px">${lbl}${cnt>1?` ×${cnt}`:''}</span>`;
       }).join('');
     const winLabel = inc.windowCount > 1
       ? `<span style="font-size:9px;color:var(--muted)">${inc.windowCount} windows</span>` : '';
-    return `<tr style="border-bottom:1px solid rgba(255,255,255,.04)">
-      <td style="padding:6px 8px;white-space:nowrap"><span class="badge ${sevCls}" style="font-size:10px">${inc.severity}</span></td>
+    return `<tr style="${rowStyle}">
+      <td style="padding:6px 8px;white-space:nowrap"><span class="badge ${sevCls}" style="font-size:10px">${sevLabel}</span></td>
       <td style="padding:6px 4px;max-width:110px;overflow:hidden">
         <div style="font-family:monospace;font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(inc.entity_id)}">${esc(inc.entity_id)}</div>
         <div style="font-size:10px;color:var(--muted)">${fmtAge(inc.latest_ts)} ${winLabel}</div>
@@ -2148,7 +2155,14 @@ async function loadIncidents() {
       <td style="padding:6px 4px">${sigBadges}</td>
       <td style="padding:6px 8px;white-space:nowrap"><button class="btn-rca-sm" onclick="openRCAFromAnomaly('${esc(inc.entity_id)}',${inc.latest_ts},${inc.bucket_ts})">RCA</button></td>
     </tr>`;
-  }).join('');
+  }
+
+  let html = active.map(i => incRow(i, false)).join('');
+  if (resolved.length) {
+    html += `<tr><td colspan="4" style="padding:6px 8px 2px;font-size:10px;color:var(--muted);border-top:1px solid var(--border)">Resolved (last 30 min)</td></tr>`;
+    html += resolved.map(i => incRow(i, true)).join('');
+  }
+  tbody.innerHTML = html;
 }
 
 async function loadAnomalies() {
