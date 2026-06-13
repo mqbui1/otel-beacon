@@ -308,6 +308,9 @@ func (b *ClickHouseBackend) QueryTopology(_ context.Context) ([]TopologyEdge, er
 
 // Fingerprint / error signature — stubs for ClickHouse (SQLite-only for now).
 func (b *ClickHouseBackend) FlushAnomalies(_ context.Context, _ []AnomalyRow) error { return nil }
+func (b *ClickHouseBackend) DeleteMissingServiceAnomaly(_ context.Context, _ string) error {
+	return nil
+}
 func (b *ClickHouseBackend) UpsertTraceFingerprint(_ context.Context, _ TraceFingerprintRow) error {
 	return nil
 }

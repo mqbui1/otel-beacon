@@ -70,6 +70,7 @@ func main() {
 	defer evalCancel()
 	server.StartEvalWorker(evalCtx, store, logger)
 	server.StartSessionEvalWorker(evalCtx, store, logger)
+	server.StartMissingSvcChecker(evalCtx, store, logger)
 	expWorker := server.NewExperimentWorker()
 	server.StartExperimentWorker(evalCtx, expWorker, store, logger)
 

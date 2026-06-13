@@ -199,6 +199,14 @@ func (s *Storage) QueryAnomalies(ctx context.Context, entityID string, lim int) 
 	return s.backend.QueryAnomalies(ctx, entityID, lim)
 }
 
+func (s *Storage) FlushAnomalies(ctx context.Context, rows []AnomalyRow) error {
+	return s.backend.FlushAnomalies(ctx, rows)
+}
+
+func (s *Storage) DeleteMissingServiceAnomaly(ctx context.Context, entityID string) error {
+	return s.backend.DeleteMissingServiceAnomaly(ctx, entityID)
+}
+
 func (s *Storage) QueryEntities(ctx context.Context, entityType, env string) ([]EntityRow, error) {
 	return s.backend.QueryEntities(ctx, entityType, env)
 }

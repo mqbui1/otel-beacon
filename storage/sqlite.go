@@ -342,6 +342,13 @@ func (b *SQLiteBackend) QueryAnomalies(ctx context.Context, entityID string, lim
 	return out, rows.Err()
 }
 
+func (b *SQLiteBackend) DeleteMissingServiceAnomaly(ctx context.Context, entityID string) error {
+	_, err := b.db.ExecContext(ctx,
+		`DELETE FROM anomalies WHERE entity_id = ? AND signal_type = 'missing_service'`,
+		entityID)
+	return err
+}
+
 func (b *SQLiteBackend) FlushAnomalies(ctx context.Context, rows []AnomalyRow) error {
 	if len(rows) == 0 {
 		return nil
@@ -887,6 +894,7 @@ CREATE TABLE IF NOT EXISTS error_signatures (
 CREATE TABLE IF NOT EXISTS entities (
     entity_type  TEXT NOT NULL,
     entity_id    TEXT NOT NULL,
+    environment  TEXT NOT NULL DEFAULT '',
     attrs        TEXT,
     last_seen_ns INTEGER,
     PRIMARY KEY (entity_type, entity_id)

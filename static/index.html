@@ -327,6 +327,8 @@
     .topo-drift    circle { fill: #2a2410; stroke: #eab308; }
     .topo-latency  circle { fill: #24160d; stroke: #f97316; }
     .topo-new      circle { fill: #1a1a2a; stroke: var(--purple); stroke-dasharray: 4 3; }
+    .topo-missing  circle { fill: #111418; stroke: #6b7280; stroke-width: 2; stroke-dasharray: 5 3; }
+    .topo-missing  text   { fill: #6b7280; }
     /* Pulse rings */
     .topo-pulse { fill: none; stroke-width: 1.5; opacity: 0; }
     .topo-errorrate .topo-pulse { stroke: #ef4444; animation: tp 1.2s infinite; }
@@ -334,6 +336,7 @@
     .topo-drift     .topo-pulse { stroke: #eab308; animation: tp 1.8s infinite; }
     .topo-latency   .topo-pulse { stroke: #f97316; animation: tp 1.5s infinite; }
     .topo-new       .topo-pulse { stroke: var(--purple); animation: tp 2.2s infinite; }
+    .topo-missing   .topo-pulse { stroke: #6b7280; animation: tp 2s infinite; }
     @keyframes tp { 0%{opacity:.7;r:0} 100%{opacity:0;r:28px} }
     /* Edges */
     .topo-edge     { fill:none; stroke:#3a4f60; stroke-opacity:.8; }
@@ -653,7 +656,7 @@
 <!-- ══ METRICS ═════════════════════════════════════════════════════════════ -->
 <div class="tab" id="tab-metrics">
   <div class="filters">
-    <label>Metric Name<input id="f-metric-name" placeholder="jvm.* or http.*"></label>
+    <label>Metric Name<input id="f-metric-name" placeholder="gen_ai.* or http.*"></label>
     <label>Service
       <span style="display:flex;gap:4px;align-items:center">
         <input id="f-metric-service" placeholder="entity filter" list="metric-svc-list" autocomplete="off"><datalist id="metric-svc-list"></datalist>
@@ -819,6 +822,7 @@
           <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#f97316"></div>Error Sig</div>
           <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#eab308"></div>Trace Drift</div>
           <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#f97316"></div>Metric (warning)</div>
+          <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#6b7280; border-style:dashed"></div>Missing</div>
         </div>
       </div>
 
@@ -826,7 +830,7 @@
       <div class="svc-list" style="margin-top:16px">
         <table>
           <thead><tr>
-            <th>Service</th><th>Last Seen</th><th>Inbound</th><th>Outbound</th><th>Actions</th>
+            <th>Service</th><th>Last Seen</th><th>Cost / Deps</th><th>Agents / Edges</th><th>Actions</th>
           </tr></thead>
           <tbody id="svc-table-body"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
         </table>
@@ -1226,6 +1230,7 @@
 <script>
 // ── Globals ────────────────────────────────────────────────────────────────
 let currentTab = 'services';
+let _genaiAgentsByEntity = {}; // entity_id → { totalCost, agentCount, totalTokens }
 let metricsChart = null;
 let refreshTimer = null;
 const REFRESH_MS = 5000;
@@ -1760,10 +1765,12 @@ const CATEGORY_PREFIXES = {
 };
 
 async function loadMetrics() {
+  const cat = document.getElementById('f-metric-category').value;
+  if (cat === 'ai') { await loadAIMetrics(); return; }
+
   const p = new URLSearchParams({ limit: document.getElementById('f-metric-limit').value || 300 });
   const name = document.getElementById('f-metric-name').value.trim();
   const svc  = document.getElementById('f-metric-service').value.trim();
-  const cat  = document.getElementById('f-metric-category').value;
   if (name) p.set('name', name);
   if (svc)  p.set('service', svc);
   if (cat && CATEGORY_PREFIXES[cat]) p.set('prefix', CATEGORY_PREFIXES[cat]);
@@ -1784,6 +1791,10 @@ async function loadMetrics() {
     seriesMap[r.name].push(r);
   });
   const seriesNames = Object.keys(seriesMap);
+
+  // Restore standard OTel headers (AI mode may have overwritten them).
+  document.querySelector('#tab-metrics table thead tr').innerHTML =
+    '<th>Name</th><th>Category</th><th>Type</th><th>Value</th><th>Unit</th><th>Service</th><th>Time</th>';
 
   document.getElementById('s-metric-count').textContent    = allRows.length;
   document.getElementById('s-metric-series').textContent   = seriesNames.length;
@@ -1851,6 +1862,77 @@ async function loadMetrics() {
       <td class="mono dim">${fmtTime(r.timestamp_ns)}</td>
     </tr>`;
   }).join('');
+}
+
+// ── AI Metrics — synthesised from GenAI spans when "AI / Gen AI" category is selected ──
+async function loadAIMetrics() {
+  const svc   = document.getElementById('f-metric-service').value.trim();
+  const limit = parseInt(document.getElementById('f-metric-limit').value) || 500;
+  const p = new URLSearchParams({ limit });
+  if (svc) p.set('agent', svc);
+
+  const res   = await api('/v1/genai/spans?' + p);
+  const spans = res?.data || [];
+
+  // Stats
+  const models = new Set(spans.map(s => s.model).filter(Boolean));
+  document.getElementById('s-metric-count').textContent    = spans.length;
+  document.getElementById('s-metric-series').textContent   = models.size;
+  document.getElementById('s-metric-filtered').textContent = spans.length;
+
+  // Chart: group spans into 5-min buckets → cost / tokens(K) / avg-latency(s)
+  const BUCKET_MS = 5 * 60 * 1000;
+  const buckets = {};
+  spans.forEach(s => {
+    const t = Math.floor(s.start_ns / 1e6 / BUCKET_MS) * BUCKET_MS;
+    if (!buckets[t]) buckets[t] = { cost: 0, tokens: 0, latArr: [] };
+    buckets[t].cost   += s.total_cost_usd || 0;
+    buckets[t].tokens += (s.input_tokens || 0) + (s.output_tokens || 0);
+    buckets[t].latArr.push(s.duration_ms || 0);
+  });
+  const times = Object.keys(buckets).sort((a,b) => +a - +b);
+  const labels    = times.map(t => fmtTime(+t * 1e6));
+  const costs     = times.map(t => +buckets[t].cost.toFixed(6));
+  const tokensK   = times.map(t => +(buckets[t].tokens / 1000).toFixed(2));
+  const latencies = times.map(t => {
+    const a = buckets[t].latArr;
+    return +(a.reduce((x,y) => x+y, 0) / a.length / 1000).toFixed(3);
+  });
+
+  if (metricsChart) metricsChart.destroy();
+  const ctx = document.getElementById('metrics-chart').getContext('2d');
+  metricsChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label: 'Cost (USD)',       data: costs,     borderColor: '#eab308', backgroundColor: '#eab30825', tension: 0.35, pointRadius: 2, fill: false },
+        { label: 'Tokens (K)',       data: tokensK,   borderColor: '#22d3ee', backgroundColor: '#22d3ee25', tension: 0.35, pointRadius: 2, fill: false },
+        { label: 'Avg Latency (s)',  data: latencies, borderColor: '#a78bfa', backgroundColor: '#a78bfa25', tension: 0.35, pointRadius: 2, fill: false },
+      ],
+    },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#7a8fa3', boxWidth: 12 } } }, scales: { x: { ticks: { color: '#7a8fa3', maxTicksLimit: 10 }, grid: { color: '#2a3540' } }, y: { ticks: { color: '#7a8fa3' }, grid: { color: '#2a3540' } } } },
+  });
+
+  // Table header overrides for AI mode
+  document.querySelector('#tab-metrics table thead tr').innerHTML =
+    '<th>Model</th><th>Agent</th><th>Cost (USD)</th><th>Tokens</th><th>Latency</th><th>Service</th><th>Time</th>';
+
+  const tbody = document.getElementById('metrics-body');
+  if (!spans.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">No AI spans yet — send some LLM traffic.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = spans.slice(0, 300).map(s => `
+    <tr>
+      <td class="mono">${esc(s.model || '—')}</td>
+      <td class="dim">${esc(s.agent_name || s.operation || '—')}</td>
+      <td style="color:var(--yellow);font-weight:600">$${(s.total_cost_usd || 0).toFixed(6)}</td>
+      <td class="dur">${((s.input_tokens||0) + (s.output_tokens||0)).toLocaleString()}</td>
+      <td class="dur">${(s.duration_ms||0).toFixed(0)} ms</td>
+      <td class="dim mono">${esc(s.entity_id || '—')}</td>
+      <td class="mono dim">${fmtTime(s.start_ns)}</td>
+    </tr>`).join('');
 }
 
 // ── Logs ───────────────────────────────────────────────────────────────────
@@ -2162,16 +2244,34 @@ function switchEnv(env) {
 async function loadServices() {
   await loadEnvironments();
   const envParam = _currentEnv ? `&env=${encodeURIComponent(_currentEnv)}` : '';
-  const [entRes, topoRes, anomRes] = await Promise.all([
+  const [entRes, topoRes, anomRes, agentRes] = await Promise.all([
     api('/v1/entities?type=service' + envParam),
     api('/v1/topology'),
     api('/v1/query/anomalies?limit=500'),
+    api('/v1/genai/agents'),
   ]);
   _svcEntities = entRes?.data  || [];
   _svcEdges    = topoRes?.data || [];
 
+  // Build genai agent lookup by entity_id for service table enrichment.
+  _genaiAgentsByEntity = {};
+  (agentRes?.data || []).forEach(a => {
+    if (!a.entity_id) return;
+    if (!_genaiAgentsByEntity[a.entity_id]) {
+      _genaiAgentsByEntity[a.entity_id] = { totalCost: 0, agentNames: new Set(), totalTokens: 0 };
+    }
+    const g = _genaiAgentsByEntity[a.entity_id];
+    g.totalCost   += a.total_cost_usd || 0;
+    g.totalTokens += a.total_tokens   || 0;
+    if (a.agent_name) g.agentNames.add(a.agent_name);
+  });
+
   // Build anomaly health map (highest-priority signal + CPU value per entity)
-  const sigPrio = {error_signature:5, span_error_rate:4, trace_drift:3, span_latency:2, metric:1};
+  // genai_* signals sit between metric(1) and span_latency(2) in priority.
+  const sigPrio = {
+    error_signature: 5, span_error_rate: 4, trace_drift: 3, span_latency: 2,
+    genai_cost_spike: 2, genai_latency_drift: 2, genai_context_bloat: 2, metric: 1,
+  };
   _anomalyByEntity = {};
   (anomRes?.data || []).forEach(a => {
     if (!a.entity_id) return;
@@ -2199,11 +2299,14 @@ async function loadServices() {
 function nodeHealthState(entityId) {
   const sig = _anomalyByEntity[entityId]?.signal;
   if (!sig) return 'topo-healthy';
-  if (sig === 'span_error_rate')  return 'topo-errorrate';
-  if (sig === 'error_signature')  return 'topo-error';
-  if (sig === 'missing_service')  return 'topo-error';
-  if (sig === 'trace_drift')      return 'topo-drift';
-  if (sig === 'span_latency')     return 'topo-latency';
+  if (sig === 'span_error_rate')    return 'topo-errorrate';
+  if (sig === 'error_signature')    return 'topo-error';
+  if (sig === 'missing_service')    return 'topo-missing';
+  if (sig === 'trace_drift')        return 'topo-drift';
+  if (sig === 'span_latency')       return 'topo-latency';
+  if (sig === 'genai_cost_spike')   return 'topo-errorrate';
+  if (sig === 'genai_context_bloat') return 'topo-errorrate';
+  if (sig === 'genai_latency_drift') return 'topo-latency';
   if (sig === 'metric') {
     const sev = _anomalyByEntity[entityId]?.severity;
     return sev === 'critical' ? 'topo-errorrate' : 'topo-latency';
@@ -2531,12 +2634,26 @@ function renderServiceTable(entities, edges) {
   }
   tbody.innerHTML = entities.map(e => {
     const lastSeen = e.last_seen_ns ? fmtTime(e.last_seen_ns) : '—';
+    const ai = _genaiAgentsByEntity[e.entity_id];
+    let col3, col4;
+    if (ai) {
+      col3 = `<span style="color:var(--yellow);font-weight:600">$${ai.totalCost.toFixed(4)}</span>
+              <span class="dim" style="font-size:10px;margin-left:4px">${(ai.totalTokens/1000).toFixed(1)}K tok</span>`;
+      col4 = `<span style="color:var(--purple)">${ai.agentNames.size} agent${ai.agentNames.size!==1?'s':''}</span>`;
+    } else {
+      col3 = `<span class="dim">${inbound[e.entity_id]  || 0}</span>`;
+      col4 = `<span class="dim">${outbound[e.entity_id] || 0}</span>`;
+    }
+    const aiBtn = ai ? `<button onclick="event.stopPropagation();switchTab('genai',document.querySelector('[onclick*=genai]'))"
+            style="background:none;border:1px solid var(--cyan);color:var(--cyan);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px">
+          AI Agents
+        </button>` : '';
     return `<tr class="clickable" onclick="selectService('${esc(e.entity_id)}')">
-      <td><span class="mono">${esc(e.entity_id)}</span></td>
+      <td><span class="mono">${esc(e.entity_id)}</span>${ai ? ' <span style="font-size:10px;background:#1a3a3a;color:var(--accent);padding:1px 5px;border-radius:3px;margin-left:4px">AI</span>' : ''}</td>
       <td class="dim mono">${lastSeen}</td>
-      <td class="dim">${inbound[e.entity_id]  || 0}</td>
-      <td class="dim">${outbound[e.entity_id] || 0}</td>
-      <td style="display:flex;gap:6px">
+      <td>${col3}</td>
+      <td>${col4}</td>
+      <td style="display:flex;gap:6px;flex-wrap:wrap">
         <button onclick="event.stopPropagation();selectService('${esc(e.entity_id)}')"
             style="background:none;border:1px solid var(--border);color:var(--accent);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px">
           Inspect
@@ -2545,6 +2662,7 @@ function renderServiceTable(entities, edges) {
             style="background:none;border:1px solid #7c3aed;color:#a78bfa;padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px">
           RCA
         </button>
+        ${aiBtn}
       </td>
     </tr>`;
   }).join('');

@@ -149,6 +149,7 @@ type Backend interface {
 	FlushMetrics(ctx context.Context, metrics []MetricRow, anomalies []AnomalyRow) error
 	FlushLogs(ctx context.Context, batch []LogRow) error
 	FlushAnomalies(ctx context.Context, rows []AnomalyRow) error
+	DeleteMissingServiceAnomaly(ctx context.Context, entityID string) error
 
 	QuerySpans(ctx context.Context, q SpanQuery) ([]SpanRow, error)
 	QueryMetrics(ctx context.Context, q MetricQuery) ([]MetricRow, error)
