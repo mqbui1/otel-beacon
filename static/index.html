@@ -2303,9 +2303,10 @@ async function loadServices() {
     error_signature: 5, span_error_rate: 4, trace_drift: 3, span_latency: 2,
     genai_cost_spike: 2, genai_latency_drift: 2, genai_context_bloat: 2, metric: 1,
   };
-  // Only consider anomalies from the last 10 minutes for topology node coloring.
-  // This ensures nodes auto-clear after recovery without needing a manual clear.
-  const topoAnomalyCutoffNs = (Date.now() - 10 * 60 * 1000) * 1e6;
+  // Only consider anomalies from the last 30 seconds for topology node coloring —
+  // matching the resolved threshold. A node goes healthy the moment the anomaly
+  // stops firing, keeping topology in sync with the incidents resolved state.
+  const topoAnomalyCutoffNs = (Date.now() - 30 * 1000) * 1e6;
   _anomalyByEntity = {};
   (anomRes?.data || []).filter(a => a.detected_at >= topoAnomalyCutoffNs).forEach(a => {
     if (!a.entity_id) return;

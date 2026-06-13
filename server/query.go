@@ -214,7 +214,7 @@ type IncidentOut struct {
 }
 
 // resolvedThresholdNs — incident is resolved if latest anomaly is older than this.
-const resolvedThresholdNs = int64(2 * 60 * 1e9)
+const resolvedThresholdNs = int64(30 * 1e9) // 30 seconds
 
 // signalPriority maps signal types to priority scores for incident ranking.
 var signalPriority = map[string]int{

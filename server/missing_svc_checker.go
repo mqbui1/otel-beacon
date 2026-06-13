@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	missingSvcThreshold = 2 * time.Minute
-	missingSvcInterval  = 30 * time.Second
+	missingSvcThreshold = 45 * time.Second
+	missingSvcInterval  = 10 * time.Second
 )
 
 // StartMissingSvcChecker periodically checks whether any known service entity
