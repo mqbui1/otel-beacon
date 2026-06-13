@@ -23,7 +23,7 @@ type SpanRow struct {
 }
 
 type MetricRow struct {
-	EntityID      string  `json:"-"` // resolved at ingest; used for fast DB queries
+	EntityID      string  `json:"service_name"` // resolved at ingest; used for fast DB queries and UI correlation
 	Name          string  `json:"name"`
 	Description   string  `json:"description,omitempty"`
 	Unit          string  `json:"unit,omitempty"`
@@ -35,7 +35,7 @@ type MetricRow struct {
 }
 
 type LogRow struct {
-	EntityID      string `json:"-"` // resolved at ingest; used for fast DB queries
+	EntityID      string `json:"service_name"` // resolved at ingest; used for fast DB queries and UI correlation
 	TimestampNs   int64  `json:"timestamp_ns"`
 	Severity      string `json:"severity,omitempty"`
 	Body          string `json:"body"`

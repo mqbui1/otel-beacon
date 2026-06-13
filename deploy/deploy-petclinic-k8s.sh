@@ -32,6 +32,7 @@ NAMESPACE="${1:-petclinic}"
 OTEL_BACKEND="${OTEL_BACKEND_ENDPOINT:-http://host.k3d.internal:4318}"
 SKIP_COLLECTOR="${SKIP_COLLECTOR:-false}"
 OTEL_AGENT_VERSION="${OTEL_AGENT_VERSION:-2.14.0}"
+DEPLOY_ENV="${DEPLOY_ENV:-$NAMESPACE}"
 OTEL_AGENT_JAR="/otel/opentelemetry-javaagent.jar"
 OTEL_AGENT_URL="https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v${OTEL_AGENT_VERSION}/opentelemetry-javaagent.jar"
 
@@ -39,6 +40,7 @@ echo "==> Deploying to namespace:   $NAMESPACE"
 echo "==> OTLP backend endpoint:    $OTEL_BACKEND"
 echo "==> Skip OTel Collector:      $SKIP_COLLECTOR"
 echo "==> OTel Java agent version:  $OTEL_AGENT_VERSION"
+echo "==> deployment.environment:   $DEPLOY_ENV"
 
 # ---------------------------------------------------------------------------
 # OTLP env blocks injected into each petclinic pod
@@ -383,7 +385,7 @@ COMMON_OTEL_ENV=$(cat <<ENVEOF
             - name: POD_UID
               valueFrom: {fieldRef: {fieldPath: metadata.uid}}
             - name: OTEL_RESOURCE_ATTRIBUTES
-              value: "deployment.environment=kubernetes,k8s.pod.name=\$(POD_NAME),k8s.namespace.name=\$(POD_NAMESPACE),k8s.pod.uid=\$(POD_UID)"
+              value: "deployment.environment=${DEPLOY_ENV},k8s.pod.name=\$(POD_NAME),k8s.namespace.name=\$(POD_NAMESPACE),k8s.pod.uid=\$(POD_UID)"
 ${NODE_IP_YAML}
             - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "${OTLP_ENDPOINT}"}
 ENVEOF

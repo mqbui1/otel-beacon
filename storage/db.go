@@ -537,10 +537,16 @@ func extractEntities(batch []SpanRow) []EntityRow {
 			continue
 		}
 		env, _ := attrs["deployment.environment"].(string)
+		// Prefer service.name; only fall back to host.name when service.name is absent
+		// (avoids creating pod-name entities alongside service entities in k8s).
+		svcName, _ := attrs["service.name"].(string)
 		for _, pair := range []struct{ t, k string }{
 			{"service", "service.name"},
 			{"host", "host.name"},
 		} {
+			if pair.k == "host.name" && svcName != "" {
+				continue // skip pod-name entity when service.name is present
+			}
 			id, _ := attrs[pair.k].(string)
 			if id == "" {
 				continue
