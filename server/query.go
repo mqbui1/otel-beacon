@@ -37,6 +37,7 @@ func NewQueryServer(store *storage.Storage, ew *ExperimentWorker, logger *zap.Lo
 	mux.HandleFunc("/v1/entity/span-logs", s.spanLogs)
 	mux.HandleFunc("/v1/rca", s.rca)
 	mux.HandleFunc("/v1/incidents", s.incidents)
+	mux.HandleFunc("/v1/incidents/clear", s.clearIncidents)
 	// GenAI observability routes
 	registerGenAIRoutes(mux, store, ew, logger)
 	return mux
@@ -213,7 +214,7 @@ type IncidentOut struct {
 }
 
 // resolvedThresholdNs — incident is resolved if latest anomaly is older than this.
-const resolvedThresholdNs = int64(5 * 60 * 1e9)
+const resolvedThresholdNs = int64(2 * 60 * 1e9)
 
 // signalPriority maps signal types to priority scores for incident ranking.
 var signalPriority = map[string]int{
@@ -455,6 +456,21 @@ func absInt64(n int64) int64 {
 		return -n
 	}
 	return n
+}
+
+func (s *queryServer) clearIncidents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete && r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	cutoff := time.Now().UnixNano() - resolvedThresholdNs
+	if err := s.store.ClearResolvedAnomalies(r.Context(), cutoff); err != nil {
+		s.logger.Error("clear resolved anomalies", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 // entityK8sAttrs looks up a service entity and returns its k8s resource attributes

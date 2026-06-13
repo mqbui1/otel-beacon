@@ -297,6 +297,14 @@ func (s *Storage) genaiWorker() {
 			return s.backend.FlushGenAISpans(s.ctx, batch)
 		})
 
+		// Register GenAI services in the entities table so they appear in the
+		// Services tab alongside regular OTel services.
+		if entities := extractEntitiesFromGenAI(batch); len(entities) > 0 {
+			if err := s.backend.UpsertEntities(s.ctx, entities); err != nil {
+				s.onError(fmt.Errorf("upsert genai entities: %w", err))
+			}
+		}
+
 		// Aggregate sessions from spans that carry a session_id.
 		if ids := extractSessionIDs(batch); len(ids) > 0 {
 			sessions, err := s.backend.FlushSessions(s.ctx, ids)
@@ -438,6 +446,32 @@ func (s *Storage) QuerySession(ctx context.Context, sessionID string) (*SessionR
 
 func (s *Storage) FlushSessionEval(ctx context.Context, sess SessionRow) error {
 	return s.backend.FlushSessionEval(ctx, sess)
+}
+
+// extractEntitiesFromGenAI derives EntityRows from a GenAI span batch so that
+// AI services are discoverable in the Services tab topology view.
+func extractEntitiesFromGenAI(batch []GenAISpanRow) []EntityRow {
+	type key struct{ id string }
+	seen := make(map[key]EntityRow, len(batch))
+	for _, gs := range batch {
+		if gs.EntityID == "" {
+			continue
+		}
+		k := key{gs.EntityID}
+		if existing, ok := seen[k]; !ok || gs.StartNs > existing.LastSeenNs {
+			seen[k] = EntityRow{
+				EntityType: "service",
+				EntityID:   gs.EntityID,
+				Attrs:      gs.ResourceAttrs,
+				LastSeenNs: gs.StartNs,
+			}
+		}
+	}
+	out := make([]EntityRow, 0, len(seen))
+	for _, e := range seen {
+		out = append(out, e)
+	}
+	return out
 }
 
 // extractSessionIDs returns the deduplicated set of non-empty session IDs in a batch.

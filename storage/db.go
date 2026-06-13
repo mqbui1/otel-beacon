@@ -207,6 +207,10 @@ func (s *Storage) DeleteMissingServiceAnomaly(ctx context.Context, entityID stri
 	return s.backend.DeleteMissingServiceAnomaly(ctx, entityID)
 }
 
+func (s *Storage) ClearResolvedAnomalies(ctx context.Context, olderThanNs int64) error {
+	return s.backend.ClearResolvedAnomalies(ctx, olderThanNs)
+}
+
 func (s *Storage) QueryEntities(ctx context.Context, entityType, env string) ([]EntityRow, error) {
 	return s.backend.QueryEntities(ctx, entityType, env)
 }

@@ -844,10 +844,16 @@
       <div id="svc-incidents-panel">
         <div class="svc-detail-hdr" style="justify-content:space-between">
           <h3 style="margin:0;font-size:14px">Active Incidents</h3>
-          <button onclick="document.getElementById('nav-anomalies').click()"
-            style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:11px;padding:0">
-            Raw Anomalies →
-          </button>
+          <div style="display:flex;align-items:center;gap:8px">
+            <button id="btn-clear-resolved" onclick="clearResolvedIncidents()"
+              style="background:none;border:1px solid var(--border);color:var(--muted);cursor:pointer;font-size:10px;padding:2px 6px;border-radius:4px">
+              Clear Resolved
+            </button>
+            <button onclick="document.getElementById('nav-anomalies').click()"
+              style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:11px;padding:0">
+              Raw Anomalies →
+            </button>
+          </div>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:0;padding:8px 12px;border-bottom:1px solid var(--border)">
           <div class="stat" style="padding:6px 4px"><div class="val" id="s-inc-count" style="font-size:18px">—</div><div class="lbl">Incidents</div></div>
@@ -2165,6 +2171,17 @@ async function loadIncidents() {
   tbody.innerHTML = html;
 }
 
+async function clearResolvedIncidents() {
+  const btn = document.getElementById('btn-clear-resolved');
+  if (btn) { btn.textContent = 'Clearing…'; btn.disabled = true; }
+  try {
+    await fetch('/v1/incidents/clear', { method: 'DELETE' });
+    await loadIncidents();
+  } finally {
+    if (btn) { btn.textContent = 'Clear Resolved'; btn.disabled = false; }
+  }
+}
+
 async function loadAnomalies() {
   const p = new URLSearchParams({ limit: document.getElementById('f-anom-limit').value || 200 });
   const res = await api('/v1/query/anomalies?' + p);
@@ -2286,8 +2303,11 @@ async function loadServices() {
     error_signature: 5, span_error_rate: 4, trace_drift: 3, span_latency: 2,
     genai_cost_spike: 2, genai_latency_drift: 2, genai_context_bloat: 2, metric: 1,
   };
+  // Only consider anomalies from the last 10 minutes for topology node coloring.
+  // This ensures nodes auto-clear after recovery without needing a manual clear.
+  const topoAnomalyCutoffNs = (Date.now() - 10 * 60 * 1000) * 1e6;
   _anomalyByEntity = {};
-  (anomRes?.data || []).forEach(a => {
+  (anomRes?.data || []).filter(a => a.detected_at >= topoAnomalyCutoffNs).forEach(a => {
     if (!a.entity_id) return;
     if (!_anomalyByEntity[a.entity_id]) _anomalyByEntity[a.entity_id] = { signal: null, severity: null, cpu: 0 };
     const cur = _anomalyByEntity[a.entity_id];

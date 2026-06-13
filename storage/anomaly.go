@@ -212,7 +212,7 @@ func anomalyRow(entity, name string, value, score, mean, stddev float64, algo st
 		Algorithm:    algo,
 		Severity:     scoreSeverity(score, threshold),
 		Description:  fmt.Sprintf("%s: value %.4g deviates from mean %.4g (score %.2f)", name, value, mean, score),
-		DetectedAt:   time.Now().Unix(),
+		DetectedAt:   time.Now().UnixNano(),
 	}
 }
 

@@ -342,6 +342,12 @@ func (b *SQLiteBackend) QueryAnomalies(ctx context.Context, entityID string, lim
 	return out, rows.Err()
 }
 
+func (b *SQLiteBackend) ClearResolvedAnomalies(ctx context.Context, olderThanNs int64) error {
+	_, err := b.db.ExecContext(ctx,
+		`DELETE FROM anomalies WHERE detected_at < ?`, olderThanNs)
+	return err
+}
+
 func (b *SQLiteBackend) DeleteMissingServiceAnomaly(ctx context.Context, entityID string) error {
 	_, err := b.db.ExecContext(ctx,
 		`DELETE FROM anomalies WHERE entity_id = ? AND signal_type = 'missing_service'`,
