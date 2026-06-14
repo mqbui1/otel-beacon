@@ -11,6 +11,7 @@ from .span_drop import SpanDropScenario
 from .span_spike import SpanSpikeScenario
 from .combined import CombinedScenario
 from .kill_service import KillServiceScenario
+from .new_call_path import NewCallPathScenario
 
 SCENARIOS: dict[str, type[BaseScenario]] = {
     "db_slowdown":        DbSlowdownScenario,
@@ -25,6 +26,7 @@ SCENARIOS: dict[str, type[BaseScenario]] = {
     "span_spike":         SpanSpikeScenario,
     "combined":           CombinedScenario,
     "kill_service":       KillServiceScenario,
+    "new_call_path":      NewCallPathScenario,
 }
 
 __all__ = [
@@ -42,4 +44,5 @@ __all__ = [
     "SpanSpikeScenario",
     "CombinedScenario",
     "KillServiceScenario",
+    "NewCallPathScenario",
 ]

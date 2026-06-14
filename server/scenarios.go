@@ -141,6 +141,15 @@ var scenarioMeta = []map[string]string{
 		"signal":           "missing_service",
 		"color":            "#6b7280",
 	},
+	{
+		"name":             "new_call_path",
+		"label":            "New Call Path",
+		"description":      "A feature flag adds visits-service → audit-service — a brand-new topology edge never seen in baseline. Fires trace_drift with no errors.",
+		"affected_service": "visits-service",
+		"affected_op":      "audit.log",
+		"signal":           "trace_drift",
+		"color":            "#eab308",
+	},
 }
 
 // ScenarioStatus is the JSON body returned by GET /v1/scenarios/status.
