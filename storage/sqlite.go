@@ -350,10 +350,14 @@ func (b *SQLiteBackend) ClearResolvedAnomalies(ctx context.Context, olderThanNs 
 
 func (b *SQLiteBackend) ResetSimulationData(ctx context.Context) error {
 	for _, q := range []string{
+		`DELETE FROM spans`,
+		`DELETE FROM metrics`,
+		`DELETE FROM logs`,
+		`DELETE FROM entities`,
 		`DELETE FROM anomalies`,
 		`DELETE FROM error_signatures`,
 		`DELETE FROM trace_fingerprints`,
-		`DELETE FROM service_topology`, // clear edge error-rate state so red arrows disappear immediately
+		`DELETE FROM service_topology`,
 	} {
 		if _, err := b.db.ExecContext(ctx, q); err != nil {
 			return err
