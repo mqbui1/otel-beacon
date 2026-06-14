@@ -1,0 +1,76 @@
+# PetClinic topology — maps simulator roles to actual petclinic service names.
+# environment matches the petclinic k3d deployment so simulated traces
+# appear alongside real traffic in the same environment filter.
+
+environment: petclinic
+
+services:
+  frontend:
+    name: api-gateway
+    language: java
+    version: "3.3.0"
+    hosts: [api-gateway-1]
+
+  api-gateway:
+    name: api-gateway
+    language: java
+    version: "3.3.0"
+    hosts: [api-gateway-1]
+
+  order-service:
+    name: visits-service
+    language: java
+    version: "3.3.0"
+    hosts: [visits-service-1]
+
+  user-service:
+    name: customers-service
+    language: java
+    version: "3.3.0"
+    hosts: [customers-service-1]
+
+  product-service:
+    name: vets-service
+    language: java
+    version: "3.3.0"
+    hosts: [vets-service-1]
+
+  payment-service:
+    name: visits-service
+    language: java
+    version: "3.3.0"
+    hosts: [visits-service-1]
+
+  postgres:
+    name: h2
+    language: h2
+    version: "2.2.224"
+    hosts: [petclinic-db]
+
+  redis:
+    name: caffeine-cache
+    language: java
+    version: "3.1.0"
+    hosts: [in-process-cache]
+
+  stripe-api:
+    name: external-api
+    language: java
+    version: "1.0.0"
+    hosts: [external-api-1]
+
+scenario_overrides:
+  db_slowdown:
+    root_endpoint: "GET /api/customer/owners"
+    slow_query: "SELECT * FROM owners WHERE last_name LIKE ? ORDER BY last_name"
+    slow_table: "owners"
+
+  cache_miss_storm:
+    root_endpoint: "GET /api/vet/vets"
+
+  payment_timeout:
+    external_endpoint: "https://api.openai.com/v1/chat/completions"
+    affected_region: "us-east-1"
+
+  error_cascade:
+    root_endpoint: "GET /api/visit/owners/*/pets/*/visits"

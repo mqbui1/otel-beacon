@@ -53,13 +53,16 @@ func runMissingSvcCheck(ctx context.Context, store *storage.Storage, logger *zap
 		}
 		if e.LastSeenNs < cutoff {
 			silentSec := float64(now-e.LastSeenNs) / 1e9
+			// Delete the existing row first so we upsert a single up-to-date record
+			// rather than accumulating one row per check interval.
+			_ = store.DeleteMissingServiceAnomaly(ctx, e.EntityID)
 			anomaly := storage.AnomalyRow{
 				EntityID:     e.EntityID,
 				SignalType:   "missing_service",
 				DetectorName: "staleness",
 				MetricName:   "last_seen_ns",
 				Value:        silentSec,
-				Score:        silentSec / missingSvcThreshold.Seconds(), // multiples of threshold
+				Score:        silentSec / missingSvcThreshold.Seconds(),
 				Algorithm:    "threshold",
 				Severity:     "critical",
 				Description:  fmt.Sprintf("%s has not reported for %.0fs", e.EntityID, silentSec),

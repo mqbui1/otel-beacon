@@ -52,6 +52,7 @@ type RCAResult struct {
 	Entity             string                        `json:"entity"`
 	IncidentTs         int64                         `json:"incident_ts"`
 	WindowSecs         int                           `json:"window_secs"`
+	IsMissing          bool                          `json:"is_missing"` // true when no telemetry received (service down)
 	Health             EntityHealth                  `json:"health"`
 	Baseline           EntityHealth                  `json:"baseline"` // health in previous window (before incident)
 	Upstream           []NeighborHealth              `json:"upstream"`
@@ -127,6 +128,23 @@ func (s *queryServer) rca(w http.ResponseWriter, r *http.Request) {
 
 	candidates := rankCauses(health, baseline, upstream, downstream, coLocated)
 
+	// Check for an active missing_service anomaly — if present, surface "service down" as the top cause.
+	isMissing := false
+	anomalies, _ := s.store.QueryAnomalies(ctx, entityID, 20)
+	for _, a := range anomalies {
+		if a.SignalType == "missing_service" {
+			isMissing = true
+			silentSec := a.Value
+			candidates = append([]CauseCandidate{{
+				EntityID:   entityID,
+				CauseType:  "service_down",
+				Confidence: 0.99,
+				Evidence:   fmt.Sprintf("%s has not reported telemetry for %.0fs — pod may be down or crashed", entityID, silentSec),
+			}}, candidates...)
+			break
+		}
+	}
+
 	// Error signatures: new / spiking error patterns for the focal entity
 	errorSigs, _ := s.store.QueryErrorSignatures(ctx, entityID)
 	for _, sig := range errorSigs {
@@ -171,6 +189,7 @@ func (s *queryServer) rca(w http.ResponseWriter, r *http.Request) {
 		Entity:             entityID,
 		IncidentTs:         incidentTs,
 		WindowSecs:         windowSecs,
+		IsMissing:          isMissing,
 		Health:             health,
 		Baseline:           baseline,
 		Upstream:           upstream,

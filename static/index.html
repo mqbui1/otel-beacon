@@ -49,6 +49,7 @@
     .hdr-right label { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
     .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); animation: blink 2s infinite; }
     @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+    @keyframes scPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(.7)} }
 
     /* ── Layout ── */
     main { padding: 24px; max-width: 1440px; margin: 0 auto; }
@@ -553,6 +554,7 @@
     <button onclick="switchTab('metrics',this)">Metrics</button>
     <button onclick="switchTab('logs',this)">Logs</button>
     <button onclick="switchTab('genai',this)" style="color:var(--purple)">AI Agents</button>
+    <button id="nav-scenarios" onclick="switchTab('scenarios',this)" style="color:#22c55e">Scenarios</button>
   </nav>
   <div class="hdr-right">
     <span id="last-refresh">—</span>
@@ -887,6 +889,47 @@
       </div>
 
     </div>
+  </div>
+</div>
+
+<!-- ══ SCENARIOS ════════════════════════════════════════════════════════════
+     To remove: delete this block, the nav button, loadCurrent entry,
+     all JS below marked SCENARIOS, and server/scenarios.go.
+  ══════════════════════════════════════════════════════════════════════════ -->
+<div class="tab" id="tab-scenarios">
+  <!-- Status bar — shown while a scenario is running -->
+  <div id="sc-status-bar" style="display:none;background:#0f1a10;border:1px solid #22c55e44;border-radius:8px;padding:12px 20px;margin:16px 16px 0">
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span id="sc-pulse" style="width:10px;height:10px;border-radius:50%;background:#22c55e;display:inline-block;animation:scPulse 1s infinite"></span>
+        <span id="sc-run-label" style="font-weight:700;font-size:14px;color:#22c55e">—</span>
+        <span id="sc-phase-badge" class="badge b-info" style="font-size:10px">—</span>
+      </div>
+      <div style="flex:1;min-width:180px">
+        <div style="background:#1a2a1a;border-radius:4px;height:6px;overflow:hidden">
+          <div id="sc-progress" style="height:100%;background:#22c55e;transition:width .5s;width:0%"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:4px;font-size:10px;color:var(--muted)">
+          <span id="sc-elapsed-lbl">0s</span>
+          <span id="sc-total-lbl">—</span>
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--muted)"><span id="sc-req-count">0</span> requests sent</div>
+      <button onclick="stopScenario()" style="background:#ef444422;border:1px solid #ef4444;color:#ef4444;padding:4px 12px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600">Stop</button>
+    </div>
+    <!-- Phase timeline -->
+    <div style="display:flex;gap:4px;margin-top:10px;font-size:10px">
+      <div id="sc-phase-warmup"  style="flex:0 0 auto;padding:2px 8px;border-radius:4px;border:1px solid var(--border);color:var(--muted)">Warmup</div>
+      <div style="flex:1;height:1px;background:var(--border);align-self:center"></div>
+      <div id="sc-phase-anomaly" style="flex:0 0 auto;padding:2px 8px;border-radius:4px;border:1px solid var(--border);color:var(--muted)">Anomaly</div>
+      <div style="flex:1;height:1px;background:var(--border);align-self:center"></div>
+      <div id="sc-phase-cooldown" style="flex:0 0 auto;padding:2px 8px;border-radius:4px;border:1px solid var(--border);color:var(--muted)">Cooldown</div>
+    </div>
+  </div>
+
+  <!-- Scenario cards grid -->
+  <div style="padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(440px,1fr));gap:16px" id="sc-cards">
+    <div style="color:var(--muted);padding:32px;text-align:center">Loading scenarios…</div>
   </div>
 </div>
 
@@ -1264,6 +1307,7 @@ function loadCurrent() {
   else if (currentTab === 'anomalies') loadAnomalies();
   else if (currentTab === 'services')  { loadServices(); loadIncidents(); }
   else if (currentTab === 'genai')     loadGenAI();
+  else if (currentTab === 'scenarios') loadScenarios();
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -2156,7 +2200,7 @@ async function loadIncidents() {
       <td style="padding:6px 8px;white-space:nowrap"><span class="badge ${sevCls}" style="font-size:10px">${sevLabel}</span></td>
       <td style="padding:6px 4px;max-width:110px;overflow:hidden">
         <div style="font-family:monospace;font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(inc.entity_id)}">${esc(inc.entity_id)}</div>
-        <div style="font-size:10px;color:var(--muted)">${fmtAge(inc.latest_ts)} ${winLabel}</div>
+        <div style="font-size:10px;color:var(--muted)">${fmtAge(inc.latest_ts / 1e9)} ${winLabel}</div>
       </td>
       <td style="padding:6px 4px">${sigBadges}</td>
       <td style="padding:6px 8px;white-space:nowrap"><button class="btn-rca-sm" onclick="openRCAFromAnomaly('${esc(inc.entity_id)}',${inc.latest_ts},${inc.bucket_ts})">RCA</button></td>
@@ -2193,33 +2237,39 @@ async function loadAnomalies() {
   if (sigFilter) rows = rows.filter(r => r.signal_type === sigFilter);
   if (sevFilter) rows = rows.filter(r => r.severity === sevFilter);
 
-  document.getElementById('s-anom-count').textContent  = rows.length;
-  document.getElementById('s-anom-crit').textContent   = rows.filter(r => r.severity === 'critical').length;
-  document.getElementById('s-anom-warn').textContent   = rows.filter(r => r.severity === 'warning').length;
-  document.getElementById('s-anom-trace').textContent  = rows.filter(r => r.signal_type === 'trace_drift').length;
-  document.getElementById('s-anom-errsig').textContent = rows.filter(r => r.signal_type === 'error_signature').length;
+  const _nowNs = Date.now() * 1e6, _resNs = 30 * 1e9;
+  const active = rows.filter(r => r.detected_at >= _nowNs - _resNs);
+  document.getElementById('s-anom-count').textContent  = active.length;
+  document.getElementById('s-anom-crit').textContent   = active.filter(r => r.severity === 'critical').length;
+  document.getElementById('s-anom-warn').textContent   = active.filter(r => r.severity === 'warning').length;
+  document.getElementById('s-anom-trace').textContent  = active.filter(r => r.signal_type === 'trace_drift').length;
+  document.getElementById('s-anom-errsig').textContent = active.filter(r => r.signal_type === 'error_signature').length;
 
   const tbody = document.getElementById('anomalies-body');
   if (!rows.length) {
     tbody.innerHTML = '<tr><td colspan="8" class="empty">No anomalies detected yet…</td></tr>';
     return;
   }
+  const nowNs = Date.now() * 1e6;
+  const resolvedThresholdNs = 30 * 1e9; // must match server/query.go
   tbody.innerHTML = rows.map(r => {
-    const sevCls  = r.severity === 'critical' ? 'b-high' : 'b-med';
-    const sigCls  = SIGNAL_BADGE[r.signal_type] || 'b-info';
+    const isResolved = r.detected_at < nowNs - resolvedThresholdNs;
+    const sevCls  = isResolved ? 'b-info' : (r.severity === 'critical' ? 'b-high' : 'b-med');
+    const sevLbl  = isResolved ? '✓ resolved' : r.severity;
+    const sigCls  = isResolved ? 'b-info' : (SIGNAL_BADGE[r.signal_type] || 'b-info');
     const sigLbl  = SIGNAL_LABELS[r.signal_type] || r.signal_type;
     const canRCA  = r.entity_id && r.entity_id !== '';
     const rcaBtn  = canRCA
       ? `<button class="btn-rca-sm" onclick="openRCAFromAnomaly('${esc(r.entity_id)}',${r.detected_at})">Analyze</button>`
       : '';
-    return `<tr>
-      <td><span class="badge ${sevCls}">${r.severity}</span></td>
+    return `<tr style="${isResolved ? 'opacity:0.45' : ''}">
+      <td><span class="badge ${sevCls}">${sevLbl}</span></td>
       <td class="mono">${esc(r.entity_id || '—')}</td>
       <td><span class="badge ${sigCls}">${sigLbl}</span></td>
       <td class="dim" style="max-width:160px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis" title="${esc(r.detector_name)}">${esc(r.detector_name)}</td>
       <td style="max-width:340px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis" title="${esc(r.description)}">${esc(r.description)}</td>
       <td><span class="badge b-info">${r.score.toFixed(2)}</span></td>
-      <td class="mono dim">${fmtTime(r.detected_at * 1e9)}</td>
+      <td class="mono dim">${fmtTime(r.detected_at)}</td>
       <td>${rcaBtn}</td>
     </tr>`;
   }).join('');
@@ -2984,6 +3034,14 @@ function renderRCAMap(r) {
 
 function renderRCAResult(r) {
   const h = r.health, b = r.baseline;
+  const missingBanner = r.is_missing ? `
+    <div style="background:#ef444415;border:1px solid #ef4444;border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px">
+      <span style="font-size:22px;line-height:1">&#128683;</span>
+      <div>
+        <div style="font-size:13px;font-weight:700;color:#ef4444">Service Unreachable</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">${esc(r.entity)} is not reporting telemetry — pod is likely down or crashed</div>
+      </div>
+    </div>` : '';
 
   function errColor(rate) {
     return rate > 0.2 ? 'var(--red)' : rate > 0.05 ? '#f97316' : '#22c55e';
@@ -3057,12 +3115,14 @@ function renderRCAResult(r) {
     const pct = Math.round(c.confidence * 100);
     const confColor = pct >= 70 ? 'var(--red)' : pct >= 45 ? '#f97316' : '#eab308';
     const typeLabel = {
+      service_down:    'Service Down',
       downstream_error: 'Downstream Error', infra_pressure: 'Infra Pressure',
       upstream_spike: 'Traffic Spike', error_signature: 'New Error Pattern',
       trace_drift: 'New Call Path', self_error: 'Self Error Rate',
       self_infra: 'Self CPU/Memory',
     }[c.cause_type] || c.cause_type;
-    const typeColor = c.cause_type === 'error_signature' ? '#f97316'
+    const typeColor = c.cause_type === 'service_down'    ? '#ef4444'
+                    : c.cause_type === 'error_signature' ? '#f97316'
                     : c.cause_type === 'trace_drift'     ? 'var(--cyan)'
                     : c.cause_type === 'self_error'      ? 'var(--red)'
                     : c.cause_type === 'self_infra'      ? '#f97316'
@@ -3142,6 +3202,7 @@ function renderRCAResult(r) {
     </div>` : '';
 
   return `
+  ${missingBanner}
   <div style="display:grid;grid-template-columns:44% 56%;gap:16px;align-items:start">
     <!-- Left: health cards + neighbor tables -->
     <div>
@@ -4217,6 +4278,143 @@ async function loadCustomSignalsForSpan(spanId) {
       </div>
     </div>`;
   }).join('');
+}
+
+// ── SCENARIOS ──────────────────────────────────────────────────────────────
+let _scPollTimer = null;
+let _scCards = [];   // cached scenario metadata
+
+async function loadScenarios() {
+  const res = await api('/v1/scenarios');
+  _scCards = res?.scenarios || [];
+  const status = await api('/v1/scenarios/status');
+  renderScenarioCards(_scCards, status);
+  updateScenarioStatusBar(status);
+  if (status?.running && !_scPollTimer) startScenarioPoll();
+}
+
+function renderScenarioCards(scenarios, status) {
+  const grid = document.getElementById('sc-cards');
+  if (!grid) return;
+  if (!scenarios.length) {
+    grid.innerHTML = '<div style="color:var(--muted);padding:32px;text-align:center">No scenarios available.</div>';
+    return;
+  }
+  const running = status?.running ? status.scenario : null;
+  grid.innerHTML = scenarios.map(s => {
+    const isRunning = s.name === running;
+    const otherRunning = running && !isRunning;
+    const color = s.color || '#22c55e';
+    const signalBadge = `<span style="background:${color}22;color:${color};border:1px solid ${color}66;border-radius:4px;padding:1px 7px;font-size:10px;font-weight:600">${esc(s.signal || '')}</span>`;
+    return `<div style="background:var(--surface);border:1px solid ${isRunning ? color : 'var(--border)'};border-radius:10px;padding:20px;display:flex;flex-direction:column;gap:12px;transition:border-color .2s">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+        <div>
+          <div style="font-size:15px;font-weight:700;color:${color}">${esc(s.label)}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">Service: <strong style="color:var(--fg)">${esc(s.affected_service)}</strong> &nbsp;·&nbsp; Op: <code style="font-size:10px">${esc(s.affected_op)}</code></div>
+        </div>
+        ${signalBadge}
+      </div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.5">${esc(s.description)}</div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <div style="display:flex;gap:6px;align-items:center">
+          <label style="font-size:11px;color:var(--muted)">RPS</label>
+          <input id="sc-rps-${s.name}" type="number" min="0.5" max="20" step="0.5" value="3"
+            style="width:52px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--fg);padding:2px 6px;font-size:11px">
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <label style="font-size:11px;color:var(--muted)">Warmup</label>
+          <input id="sc-warmup-${s.name}" type="number" min="5" max="120" step="5" value="20"
+            style="width:52px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--fg);padding:2px 6px;font-size:11px">s
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <label style="font-size:11px;color:var(--muted)">Anomaly</label>
+          <input id="sc-anomaly-${s.name}" type="number" min="10" max="300" step="10" value="90"
+            style="width:52px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--fg);padding:2px 6px;font-size:11px">s
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <label style="font-size:11px;color:var(--muted)">Cooldown</label>
+          <input id="sc-cooldown-${s.name}" type="number" min="5" max="120" step="5" value="20"
+            style="width:52px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--fg);padding:2px 6px;font-size:11px">s
+        </div>
+        <button onclick="runScenario('${s.name}')"
+          ${otherRunning ? 'disabled' : ''}
+          style="margin-left:auto;background:${isRunning ? '#22c55e33' : color+'22'};border:1px solid ${isRunning ? '#22c55e' : color};color:${isRunning ? '#22c55e' : color};padding:5px 18px;border-radius:6px;cursor:${otherRunning ? 'not-allowed' : 'pointer'};font-size:12px;font-weight:700;opacity:${otherRunning ? '.4' : '1'}">
+          ${isRunning ? '▶ Running…' : 'Run'}
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function runScenario(name) {
+  const rps      = parseFloat(document.getElementById(`sc-rps-${name}`)?.value) || 3;
+  const warmup   = parseInt(document.getElementById(`sc-warmup-${name}`)?.value) || 20;
+  const anomaly  = parseInt(document.getElementById(`sc-anomaly-${name}`)?.value) || 90;
+  const cooldown = parseInt(document.getElementById(`sc-cooldown-${name}`)?.value) || 20;
+
+  const res = await api('/v1/scenarios/run', {
+    method: 'POST',
+    body: JSON.stringify({ scenario: name, rps, warmup_s: warmup, anomaly_s: anomaly, cooldown_s: cooldown })
+  });
+  if (!res) { alert('Failed to start scenario — check server logs.'); return; }
+  startScenarioPoll();
+}
+
+async function stopScenario() {
+  await api('/v1/scenarios/stop', { method: 'DELETE' });
+  stopScenarioPoll();
+  updateScenarioStatusBar({ running: false });
+  renderScenarioCards(_scCards, { running: false });
+}
+
+function startScenarioPoll() {
+  if (_scPollTimer) return;
+  _scPollTimer = setInterval(async () => {
+    const status = await api('/v1/scenarios/status');
+    updateScenarioStatusBar(status);
+    renderScenarioCards(_scCards, status);
+    if (!status?.running) stopScenarioPoll();
+  }, 2000);
+}
+
+function stopScenarioPoll() {
+  if (_scPollTimer) { clearInterval(_scPollTimer); _scPollTimer = null; }
+}
+
+function updateScenarioStatusBar(status) {
+  const bar = document.getElementById('sc-status-bar');
+  if (!bar) return;
+  if (!status?.running) {
+    bar.style.display = 'none';
+    return;
+  }
+  bar.style.display = 'block';
+  document.getElementById('sc-run-label').textContent = status.label || status.scenario;
+  document.getElementById('sc-req-count').textContent = status.requests || 0;
+
+  const elapsed = status.elapsed_s || 0;
+  const total   = status.total_s || 1;
+  const pct     = Math.min(100, Math.round(elapsed / total * 100));
+  document.getElementById('sc-progress').style.width = pct + '%';
+  document.getElementById('sc-elapsed-lbl').textContent = elapsed + 's';
+  document.getElementById('sc-total-lbl').textContent = total + 's total';
+
+  const phase = status.phase || 'warmup';
+  document.getElementById('sc-phase-badge').textContent = phase;
+  const phaseColors = { warmup: '#facc15', anomaly: '#ef4444', cooldown: '#22c55e' };
+  document.getElementById('sc-phase-badge').style.background = (phaseColors[phase] || '#888') + '22';
+  document.getElementById('sc-phase-badge').style.color = phaseColors[phase] || '#888';
+
+  // Highlight active phase in timeline
+  ['warmup','anomaly','cooldown'].forEach(p => {
+    const el = document.getElementById(`sc-phase-${p}`);
+    if (!el) return;
+    const active = p === phase;
+    el.style.background = active ? (phaseColors[p] + '22') : 'transparent';
+    el.style.borderColor = active ? phaseColors[p] : 'var(--border)';
+    el.style.color       = active ? phaseColors[p] : 'var(--muted)';
+    el.style.fontWeight  = active ? '700' : '400';
+  });
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
