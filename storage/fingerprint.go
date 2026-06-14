@@ -352,9 +352,27 @@ func (s *Storage) runErrorSignature() error {
 
 // ── Span rate worker ──────────────────────────────────────────────────────────
 // Computes per-service error rate and P95 latency every 5 min, runs through MAD detector.
+// Also launches a fast (30s) comparison detector alongside it for quick demo signal.
 
 func (s *Storage) spanRateWorker() {
 	defer s.wg.Done()
+	// Fast detector: 30s interval, no initial delay, compares current vs prior window.
+	// Designed to fire within one anomaly phase of a scenario (catches spikes quickly).
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := s.runFastSpanDetection(); err != nil {
+					s.onError(fmt.Errorf("fast span detection: %w", err))
+				}
+			case <-s.ctx.Done():
+				return
+			}
+		}
+	}()
+	// Slow MAD detector (original): 3-min delay, 5-min window, needs 30 samples.
 	select {
 	case <-time.After(3 * time.Minute):
 	case <-s.ctx.Done():
@@ -372,6 +390,136 @@ func (s *Storage) spanRateWorker() {
 			return
 		}
 	}
+}
+
+// runFastSpanDetection compares the current 30s window to the prior 30s window
+// per service. Fires span_error_rate / span_latency anomalies when the ratio
+// exceeds the threshold — works with just a handful of spans, no history needed.
+func (s *Storage) runFastSpanDetection() error {
+	const (
+		windowSec       = 30
+		errRateMinSpans = 10  // must have at least this many spans to fire
+		errRateMinErrors = 3  // must have at least this many errors in current window
+		errRatioThresh  = 3.0 // current error rate > N× prior rate
+		latRatioThresh  = 2.5 // current P95 > N× prior P95
+		latMinMs        = 500 // only fire latency if P95 ≥ 500ms
+	)
+
+	ctx := s.ctx
+	now := time.Now()
+	curTo := now.UnixNano()
+	curFrom := now.Add(-windowSec * time.Second).UnixNano()
+	priorTo := curFrom
+	priorFrom := now.Add(-2 * windowSec * time.Second).UnixNano()
+
+	curSpans, err := s.backend.QuerySpans(ctx, SpanQuery{From: curFrom, To: curTo, InternalLimit: 3000})
+	if err != nil {
+		return err
+	}
+	priorSpans, err := s.backend.QuerySpans(ctx, SpanQuery{From: priorFrom, To: priorTo, InternalLimit: 3000})
+	if err != nil {
+		return err
+	}
+
+	type svcStats struct{ total, errors int; durations []float64 }
+	agg := func(spans []SpanRow) map[string]*svcStats {
+		m := make(map[string]*svcStats)
+		for _, sp := range spans {
+			svc := sp.EntityID
+			if svc == "" {
+				continue
+			}
+			st := m[svc]
+			if st == nil {
+				st = &svcStats{}
+				m[svc] = st
+			}
+			st.total++
+			if sp.StatusCode == 2 {
+				st.errors++
+			}
+			st.durations = append(st.durations, sp.DurationMs)
+		}
+		return m
+	}
+
+	cur := agg(curSpans)
+	prior := agg(priorSpans)
+	ts := now.Unix()
+	var anomalies []AnomalyRow
+
+	for svc, c := range cur {
+		if c.total < errRateMinSpans {
+			continue
+		}
+		p := prior[svc]
+		curErr := float64(c.errors) / float64(c.total)
+
+		// Error rate spike: current errors >> prior
+		if c.errors >= errRateMinErrors {
+			priorErr := 0.02 // assume 2% baseline when no prior data
+			if p != nil && p.total >= 5 {
+				priorErr = float64(p.errors) / float64(p.total)
+				if priorErr < 0.01 {
+					priorErr = 0.01
+				}
+			}
+			ratio := curErr / priorErr
+			if ratio >= errRatioThresh {
+				score := ratio
+				anomalies = append(anomalies, AnomalyRow{
+					EntityID:     svc,
+					SignalType:   "span_error_rate",
+					DetectorName: "Fast Span Detector",
+					MetricName:   "span.error_rate",
+					Value:        curErr,
+					Score:        score,
+					Mean:         priorErr,
+					Stddev:       0,
+					Algorithm:    "ratio",
+					Severity:     "critical",
+					Description:  fmt.Sprintf("%s error rate %.1f%% is %.1f× prior %.1f%% (%d errors / %d spans)", svc, curErr*100, ratio, priorErr*100, c.errors, c.total),
+					DetectedAt:   ts,
+				})
+			}
+		}
+
+		// P95 latency spike
+		if len(c.durations) >= errRateMinSpans {
+			curP95 := calcP95(c.durations)
+			if curP95 >= latMinMs {
+				priorP95 := 50.0 // assume 50ms baseline
+				if p != nil && len(p.durations) >= 5 {
+					priorP95 = calcP95(p.durations)
+					if priorP95 < 10 {
+						priorP95 = 10
+					}
+				}
+				ratio := curP95 / priorP95
+				if ratio >= latRatioThresh {
+					anomalies = append(anomalies, AnomalyRow{
+						EntityID:     svc,
+						SignalType:   "span_latency",
+						DetectorName: "Fast Span Detector",
+						MetricName:   "span.p95_latency_ms",
+						Value:        curP95,
+						Score:        ratio,
+						Mean:         priorP95,
+						Stddev:       0,
+						Algorithm:    "ratio",
+						Severity:     "critical",
+						Description:  fmt.Sprintf("%s P95 %.0fms is %.1f× prior %.0fms (%d spans)", svc, curP95, ratio, priorP95, c.total),
+						DetectedAt:   ts,
+					})
+				}
+			}
+		}
+	}
+
+	if len(anomalies) > 0 {
+		return s.backend.FlushAnomalies(ctx, anomalies)
+	}
+	return nil
 }
 
 func (s *Storage) runSpanRateDetection() error {
