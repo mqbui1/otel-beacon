@@ -15,6 +15,26 @@ const (
 	missingSvcInterval  = 10 * time.Second
 )
 
+// missingSvcDenylist contains service names that are known infrastructure
+// components which never emit root OTel spans themselves. They appear in
+// span attributes (db.name, peer.service, etc.) and get registered as
+// entities, but going silent is expected — not an incident.
+var missingSvcDenylist = map[string]bool{
+	// Petclinic embedded / infra
+	"h2":               true,
+	"caffeine-cache":   true,
+	"config-server":    true,
+	"discovery-server": true,
+	// Generic infra that commonly appears as span peers
+	"eureka":           true,
+	"zipkin":           true,
+	"jaeger":           true,
+	"prometheus":       true,
+	"grafana":          true,
+	"loki":             true,
+	"otel-collector":   true,
+}
+
 // StartMissingSvcChecker periodically checks whether any known service entity
 // has gone silent (no spans/metrics/logs for > missingSvcThreshold) and inserts
 // a missing_service anomaly so the topology node turns gray.
@@ -49,6 +69,9 @@ func runMissingSvcCheck(ctx context.Context, store *storage.Storage, logger *zap
 
 	for _, e := range entities {
 		if e.LastSeenNs == 0 {
+			continue
+		}
+		if missingSvcDenylist[e.EntityID] {
 			continue
 		}
 		if e.LastSeenNs < cutoff {
