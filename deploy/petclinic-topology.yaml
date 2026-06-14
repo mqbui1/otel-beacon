@@ -74,3 +74,21 @@ scenario_overrides:
 
   error_cascade:
     root_endpoint: "GET /api/visit/owners/*/pets/*/visits"
+
+  latency_spike:
+    root_endpoint: "POST /api/visit/owners/*/pets/*/visits"
+
+  oom_crash:
+    root_endpoint: "GET /api/vet/vets"
+
+  cascading_failure:
+    root_endpoint: "GET /api/customer/owners"
+
+  new_error_sig:
+    root_endpoint: "PUT /api/customer/owners/:id"
+
+  span_drop:
+    root_endpoint: "POST /api/visit/owners/*/pets/*/visits"
+
+  kill_service:
+    root_endpoint: "POST /api/visit/owners/*/pets/*/visits"
