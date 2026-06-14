@@ -353,6 +353,7 @@ func (b *SQLiteBackend) ResetSimulationData(ctx context.Context) error {
 		`DELETE FROM anomalies`,
 		`DELETE FROM error_signatures`,
 		`DELETE FROM trace_fingerprints`,
+		`DELETE FROM topology`,   // clear edge error-rate state so red arrows disappear immediately
 	} {
 		if _, err := b.db.ExecContext(ctx, q); err != nil {
 			return err
