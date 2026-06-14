@@ -348,6 +348,19 @@ func (b *SQLiteBackend) ClearResolvedAnomalies(ctx context.Context, olderThanNs 
 	return err
 }
 
+func (b *SQLiteBackend) ResetSimulationData(ctx context.Context) error {
+	for _, q := range []string{
+		`DELETE FROM anomalies`,
+		`DELETE FROM error_signatures`,
+		`DELETE FROM trace_fingerprints`,
+	} {
+		if _, err := b.db.ExecContext(ctx, q); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (b *SQLiteBackend) DeleteMissingServiceAnomaly(ctx context.Context, entityID string) error {
 	_, err := b.db.ExecContext(ctx,
 		`DELETE FROM anomalies WHERE entity_id = ? AND signal_type = 'missing_service'`,

@@ -41,7 +41,7 @@ func NewQueryServer(store *storage.Storage, ew *ExperimentWorker, logger *zap.Lo
 	// GenAI observability routes
 	registerGenAIRoutes(mux, store, ew, logger)
 	// Scenario simulation routes (remove registerScenarioRoutes + server/scenarios.go to disable)
-	registerScenarioRoutes(mux, logger)
+	registerScenarioRoutes(mux, store, logger)
 	return mux
 }
 

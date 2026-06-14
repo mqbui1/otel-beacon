@@ -27,6 +27,8 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/yourorg/otel-backend/storage"
 )
 
 // scenarioMeta is the static catalogue served to the UI.
@@ -162,16 +164,18 @@ type scenarioManager struct {
 	status  ScenarioStatus
 	startAt time.Time
 	logger  *zap.Logger
+	store   *storage.Storage
 }
 
 var _scMgr *scenarioManager
 
-func registerScenarioRoutes(mux *http.ServeMux, logger *zap.Logger) {
-	_scMgr = &scenarioManager{logger: logger}
+func registerScenarioRoutes(mux *http.ServeMux, store *storage.Storage, logger *zap.Logger) {
+	_scMgr = &scenarioManager{logger: logger, store: store}
 	mux.HandleFunc("/v1/scenarios", _scMgr.list)
 	mux.HandleFunc("/v1/scenarios/run", _scMgr.run)
 	mux.HandleFunc("/v1/scenarios/stop", _scMgr.stop)
 	mux.HandleFunc("/v1/scenarios/status", _scMgr.statusHandler)
+	mux.HandleFunc("/v1/scenarios/reset", _scMgr.reset)
 }
 
 func (m *scenarioManager) list(w http.ResponseWriter, r *http.Request) {
@@ -361,4 +365,31 @@ func (m *scenarioManager) stop(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "stopped"})
+}
+
+func (m *scenarioManager) reset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
+		http.Error(w, "POST or DELETE required", http.StatusMethodNotAllowed)
+		return
+	}
+	// Stop any running scenario first
+	m.mu.Lock()
+	cancel := m.cancel
+	cmd := m.cmd
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if cmd != nil && cmd.Process != nil {
+		cmd.Process.Signal(os.Interrupt)
+	}
+
+	if err := m.store.ResetSimulationData(r.Context()); err != nil {
+		m.logger.Error("reset simulation data", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	m.logger.Info("simulation data reset")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "reset"})
 }

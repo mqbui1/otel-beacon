@@ -312,6 +312,7 @@ func (b *ClickHouseBackend) DeleteMissingServiceAnomaly(_ context.Context, _ str
 	return nil
 }
 func (b *ClickHouseBackend) ClearResolvedAnomalies(_ context.Context, _ int64) error { return nil }
+func (b *ClickHouseBackend) ResetSimulationData(_ context.Context) error              { return nil }
 func (b *ClickHouseBackend) UpsertTraceFingerprint(_ context.Context, _ TraceFingerprintRow) error {
 	return nil
 }

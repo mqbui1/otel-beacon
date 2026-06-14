@@ -916,6 +916,7 @@
       </div>
       <div style="font-size:11px;color:var(--muted)"><span id="sc-req-count">0</span> requests sent</div>
       <button onclick="stopScenario()" style="background:#ef444422;border:1px solid #ef4444;color:#ef4444;padding:4px 12px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600">Stop</button>
+      <button onclick="resetSimulation()" style="background:#37415122;border:1px solid #6b7280;color:#6b7280;padding:4px 12px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600">Reset Data</button>
     </div>
     <!-- Phase timeline -->
     <div style="display:flex;gap:4px;margin-top:10px;font-size:10px">
@@ -925,6 +926,11 @@
       <div style="flex:1;height:1px;background:var(--border);align-self:center"></div>
       <div id="sc-phase-cooldown" style="flex:0 0 auto;padding:2px 8px;border-radius:4px;border:1px solid var(--border);color:var(--muted)">Cooldown</div>
     </div>
+  </div>
+
+  <!-- Toolbar -->
+  <div style="padding:12px 16px 0;display:flex;justify-content:flex-end">
+    <button onclick="resetSimulation()" style="background:#37415133;border:1px solid #6b7280;color:#9ca3af;padding:5px 14px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600">↺ Reset All Data</button>
   </div>
 
   <!-- Scenario cards grid -->
@@ -4365,6 +4371,18 @@ async function stopScenario() {
   stopScenarioPoll();
   updateScenarioStatusBar({ running: false });
   renderScenarioCards(_scCards, { running: false });
+}
+
+async function resetSimulation() {
+  if (!confirm('Reset all simulation data?\n\nThis clears anomalies, error signatures, and trace fingerprints so the next scenario run starts from a clean baseline.')) return;
+  const res = await api('/v1/scenarios/reset', { method: 'POST' });
+  if (!res) { alert('Reset failed — check server logs.'); return; }
+  stopScenarioPoll();
+  updateScenarioStatusBar({ running: false });
+  renderScenarioCards(_scCards, { running: false });
+  // Flash the button briefly to confirm
+  const btn = document.querySelector('[onclick="resetSimulation()"]');
+  if (btn) { const orig = btn.textContent; btn.textContent = '✓ Reset'; setTimeout(() => btn.textContent = orig, 1500); }
 }
 
 function startScenarioPoll() {

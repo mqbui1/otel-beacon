@@ -212,6 +212,10 @@ func (s *Storage) ClearResolvedAnomalies(ctx context.Context, olderThanNs int64)
 	return s.backend.ClearResolvedAnomalies(ctx, olderThanNs)
 }
 
+func (s *Storage) ResetSimulationData(ctx context.Context) error {
+	return s.backend.ResetSimulationData(ctx)
+}
+
 func (s *Storage) QueryEntities(ctx context.Context, entityType, env string) ([]EntityRow, error) {
 	return s.backend.QueryEntities(ctx, entityType, env)
 }
