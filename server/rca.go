@@ -297,10 +297,14 @@ func (s *queryServer) neighborHealthList(
 			defer wg.Done()
 			k8s := filterAttrs(attrsMap[id])
 			h := s.entityHealth(ctx, id, k8s, fromNs, toNs)
-			pre := s.entityHealth(ctx, id, k8s, fromNs-windowNs, fromNs)
+			// Lag: check the first half of the incident window — if the neighbor
+			// was already degraded then, it likely caused the focal entity's issue.
+			midNs := fromNs + windowNs/2
+			early := s.entityHealth(ctx, id, k8s, fromNs, midNs)
 			lag := 0.0
-			if pre.HasData && pre.ErrorRate > 0.1 {
-				lag = -float64(windowNs) / 1_000_000_000
+			if early.HasData && (early.ErrorRate > 0.1 || (early.P95Ms > 0 && h.P95Ms > 0 && early.P95Ms > h.P95Ms*1.5)) {
+				// Estimate lag as negative seconds — how far before the window end it degraded
+				lag = -float64(windowNs/2) / 1_000_000_000
 			}
 			out[i] = NeighborHealth{EntityID: id, Relation: relation, Health: h, LagSeconds: lag}
 		}()
@@ -401,10 +405,25 @@ func rankCauses(focal, baseline EntityHealth, upstream, downstream, coLocated []
 	}
 
 	for _, n := range coLocated {
-		if !n.Health.HasData || n.Health.CpuUsage < 0.5 {
+		if !n.Health.HasData {
 			continue
 		}
-		conf := math.Min(0.8, 0.3+n.Health.CpuUsage*0.5)
+		// Fire on high CPU (when container metrics are available) OR high log error count
+		// (works in any setup without infrastructure metrics).
+		hasCPUPressure := n.Health.CpuUsage >= 0.5
+		hasLogPressure := n.Health.LogErrors >= 10
+		if !hasCPUPressure && !hasLogPressure {
+			continue
+		}
+		var evidence string
+		conf := 0.4
+		if hasCPUPressure {
+			conf = math.Min(0.8, 0.3+n.Health.CpuUsage*0.5)
+			evidence = fmt.Sprintf("co-located %s CPU %.0f%%", n.EntityID, n.Health.CpuUsage*100)
+		} else {
+			conf = math.Min(0.65, 0.3+float64(n.Health.LogErrors)/50)
+			evidence = fmt.Sprintf("co-located %s %d error logs", n.EntityID, n.Health.LogErrors)
+		}
 		if n.LagSeconds < 0 {
 			conf = math.Min(0.8, conf+0.15)
 		}
@@ -412,7 +431,7 @@ func rankCauses(focal, baseline EntityHealth, upstream, downstream, coLocated []
 			EntityID:   n.EntityID,
 			CauseType:  "infra_pressure",
 			Confidence: conf,
-			Evidence:   fmt.Sprintf("co-located %s CPU %.0f%%%s", n.EntityID, n.Health.CpuUsage*100, lagNote(n.LagSeconds)),
+			Evidence:   evidence + lagNote(n.LagSeconds),
 		})
 	}
 
@@ -441,6 +460,19 @@ func rankCauses(focal, baseline EntityHealth, upstream, downstream, coLocated []
 			CauseType:  "self_error",
 			Confidence: conf,
 			Evidence:   fmt.Sprintf("focal error rate %.0f%% (P95 %.1fms, %d spans)", focal.ErrorRate*100, focal.P95Ms, focal.SpanTotal),
+		})
+	}
+
+	// Self: latency regression vs baseline (catches pure-latency incidents with no errors)
+	if focal.HasData && baseline.HasData && focal.P95Ms > 0 && baseline.P95Ms > 0 &&
+		focal.P95Ms > baseline.P95Ms*2 {
+		ratio := focal.P95Ms / baseline.P95Ms
+		conf := math.Min(0.85, 0.4+math.Min(0.45, (ratio-2)*0.15))
+		out = append(out, CauseCandidate{
+			EntityID:   focal.EntityID,
+			CauseType:  "self_latency",
+			Confidence: conf,
+			Evidence:   fmt.Sprintf("P95 %.0fms vs baseline %.0fms (%.1fx regression, %d spans)", focal.P95Ms, baseline.P95Ms, ratio, focal.SpanTotal),
 		})
 	}
 

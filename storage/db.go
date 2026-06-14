@@ -156,12 +156,13 @@ func (s *Storage) Init(ctx context.Context) error {
 		s.wg.Add(1)
 		go s.retentionWorker()
 	}
-	s.wg.Add(5)
+	s.wg.Add(4)
 	go s.topologyWorker()
 	go s.fingerprintWorker()
 	go s.errorSignatureWorker()
 	go s.spanRateWorker()
-	go s.missingServiceWorker()
+	// missingServiceWorker disabled: server/missing_svc_checker.go handles this
+	// with a faster 45s threshold and upsert deduplication.
 	return nil
 }
 

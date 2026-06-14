@@ -24,39 +24,91 @@ func generateNarrative(ctx context.Context, result RCAResult) (string, error) {
 
 	client := bedrockruntime.NewFromConfig(cfg)
 
-	// Summarize into a focused payload to keep the prompt small
+	// Compact error signature summary (top 5 non-baseline only)
+	type sigSummary struct {
+		Service    string `json:"service"`
+		ErrorType  string `json:"error_type"`
+		HTTPStatus string `json:"http_status,omitempty"`
+		Operation  string `json:"operation"`
+		Count      int64  `json:"count"`
+		IsNew      bool   `json:"is_new"`
+	}
+	var sigSummaries []sigSummary
+	for _, s := range result.ErrorSignatures {
+		if s.IsBaseline {
+			continue
+		}
+		sigSummaries = append(sigSummaries, sigSummary{
+			Service: s.Service, ErrorType: s.ErrorType, HTTPStatus: s.HTTPStatus,
+			Operation: s.Operation, Count: s.OccurrenceCount, IsNew: true,
+		})
+		if len(sigSummaries) == 5 {
+			break
+		}
+	}
+
+	// Compact trace fingerprint summary (top 3 non-baseline only)
+	type fpSummary struct {
+		RootService string `json:"root_service"`
+		EdgeList    string `json:"edges"`
+		Count       int64  `json:"count"`
+		IsNew       bool   `json:"is_new"`
+	}
+	var fpSummaries []fpSummary
+	for _, fp := range result.TraceFingerprints {
+		if fp.IsBaseline {
+			continue
+		}
+		fpSummaries = append(fpSummaries, fpSummary{
+			RootService: fp.RootService, EdgeList: fp.EdgeList,
+			Count: fp.OccurrenceCount, IsNew: true,
+		})
+		if len(fpSummaries) == 3 {
+			break
+		}
+	}
+
 	type payload struct {
-		Entity     string           `json:"entity"`
-		Health     EntityHealth     `json:"health"`
-		Baseline   EntityHealth     `json:"baseline"`
-		Downstream []NeighborHealth `json:"downstream"`
-		Upstream   []NeighborHealth `json:"upstream"`
-		CoLocated  []NeighborHealth `json:"co_located"`
-		Causes     []CauseCandidate `json:"candidate_causes"`
+		Entity          string           `json:"entity"`
+		Health          EntityHealth     `json:"health"`
+		Baseline        EntityHealth     `json:"baseline"`
+		Downstream      []NeighborHealth `json:"downstream"`
+		Upstream        []NeighborHealth `json:"upstream"`
+		CoLocated       []NeighborHealth `json:"co_located,omitempty"`
+		Causes          []CauseCandidate `json:"candidate_causes"`
+		ErrorSignatures []sigSummary     `json:"new_error_signatures,omitempty"`
+		TraceFingerprints []fpSummary    `json:"new_call_paths,omitempty"`
 	}
 	data, _ := json.MarshalIndent(payload{
-		Entity:     result.Entity,
-		Health:     result.Health,
-		Baseline:   result.Baseline,
-		Downstream: result.Downstream,
-		Upstream:   result.Upstream,
-		CoLocated:  result.CoLocated,
-		Causes:     result.CandidateCauses,
+		Entity:            result.Entity,
+		Health:            result.Health,
+		Baseline:          result.Baseline,
+		Downstream:        result.Downstream,
+		Upstream:          result.Upstream,
+		CoLocated:         result.CoLocated,
+		Causes:            result.CandidateCauses,
+		ErrorSignatures:   sigSummaries,
+		TraceFingerprints: fpSummaries,
 	}, "", "  ")
 
-	prompt := fmt.Sprintf(`You are an SRE analyzing an observability incident. Based on the entity correlation data below, write a concise root cause analysis (3-5 sentences). Address:
-1. What is failing and how severely (compare health vs baseline)
-2. The most likely root cause based on error rates and temporal ordering
-3. One concrete next step to investigate or resolve
+	prompt := fmt.Sprintf(`You are an SRE analyzing a production incident. Given the observability data below, produce a root cause analysis with this structure:
 
-Entity correlation data:
-%s
+**What is failing**: One sentence — service name, error rate or latency vs baseline, severity.
+**Likely root cause**: The single most probable cause based on candidate_causes confidence scores and temporal ordering (lag_seconds < 0 means degraded before the focal service). If new_error_signatures or new_call_paths are present, incorporate them.
+**Causal chain**: If multiple services are involved, describe the propagation path (e.g. "A failed → B timed out → C returned 503s").
+**Next step**: One concrete, specific action to confirm or resolve (not generic advice).
 
-Be specific with service names and numbers. Do not speculate beyond the data.`, string(data))
+Rules:
+- Cite service names and numbers from the data. Do not invent values.
+- If candidate_causes is empty but health shows latency/error regression vs baseline, reason from that directly.
+- Keep total response under 150 words.
+
+Data:
+%s`, string(data))
 
 	reqBody, _ := json.Marshal(map[string]any{
 		"anthropic_version": "bedrock-2023-05-31",
-		"max_tokens":        400,
+		"max_tokens":        600,
 		"messages":          []map[string]string{{"role": "user", "content": prompt}},
 	})
 
