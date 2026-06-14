@@ -149,6 +149,8 @@ var scenarioMeta = []map[string]string{
 		"affected_op":      "audit.log",
 		"signal":           "trace_drift",
 		"color":            "#eab308",
+		"default_warmup":   "360",
+		"warmup_note":      "6 min warmup lets the fingerprint baseline establish before injecting the new edge",
 	},
 }
 
