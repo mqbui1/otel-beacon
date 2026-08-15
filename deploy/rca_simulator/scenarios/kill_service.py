@@ -27,19 +27,19 @@ class KillServiceScenario(BaseScenario):
         g = topology.get_service if topology else (lambda role: SERVICES[role])
         self._t_frontend = get_tracer(g("frontend").name,    g("frontend").language,    g("frontend").version)
         self._t_gateway  = get_tracer(g("api-gateway").name, g("api-gateway").language, g("api-gateway").version)
-        # NOTE: no tracer for order-service/visits-service — it's "down" so emits nothing
+        # Store the topology-resolved service info so run_normal can establish
+        # the entity in the registry before the anomaly phase kills it.
+        svc = g("order-service")
+        self._svc_name = svc.name
+        self._svc_lang = svc.language
+        self._svc_ver  = svc.version
         ov = topology.scenario_overrides.get("kill_service", {}) if topology else {}
         self._endpoint = ov.get("root_endpoint", "POST /api/v1/visits")
 
     def run_normal(self, req: RequestContext, parent_ctx: Context) -> None:
         # Normal: visits-service responds fine — emit a full healthy trace
-        # Create an on-the-fly tracer for visits-service during normal phase
+        # using the topology-resolved service name set in setup().
         from ..emitter import get_tracer as _gt
-        from ..topology import SERVICES as _SVC
-        try:
-            from ..topology_loader import TopologyConfig  # noqa
-        except Exception:
-            pass
         common = {"region": req.region, "customer.tier": req.customer_tier, "user.id": req.user_id}
 
         with start_span(self._t_frontend, "POST /visits", duration_ms=15,
@@ -47,8 +47,9 @@ class KillServiceScenario(BaseScenario):
             with start_span(self._t_gateway, self._endpoint,
                             kind=SpanKind.SERVER, duration_ms=random.randint(50, 100),
                             attrs={**common, **http_attrs("POST", self._endpoint, 201)}):
-                # During normal phase, emit a visits-service span too
-                t_order = _gt("visits-service-normal", "java", "3.3.0")
+                # During normal phase, emit spans from the service that will be "killed"
+                # using the topology-resolved name so the entity is in the registry.
+                t_order = _gt(self._svc_name, self._svc_lang, self._svc_ver)
                 with start_span(t_order, "visit.schedule",
                                 kind=SpanKind.SERVER, duration_ms=random.randint(30, 70),
                                 attrs={**common, **http_attrs("POST", self._endpoint, 201)}):

@@ -36,35 +36,35 @@ var scenarioMeta = []map[string]string{
 	{
 		"name":             "db_slowdown",
 		"label":            "DB Slow Query",
-		"description":      "Missing index on owners table causes a full table scan — visits-service P99 spikes to 8-12 s, api-gateway starts returning 504s.",
-		"affected_service": "visits-service",
-		"affected_op":      "SELECT owners",
+		"description":      "Missing index on sessions table causes a full table scan — checkout P99 spikes to 8-12 s, frontend-proxy starts returning 504s.",
+		"affected_service": "checkout",
+		"affected_op":      "SELECT users",
 		"signal":           "span_latency",
 		"color":            "#f97316",
 	},
 	{
 		"name":             "error_cascade",
 		"label":            "Error Cascade",
-		"description":      "Bug in customers-service JWT validation throws NPE for enterprise tokens — 500s cascade through api-gateway to all users.",
-		"affected_service": "customers-service",
-		"affected_op":      "user.validate",
+		"description":      "Bug in recommendation-service JWT validation throws NPE for enterprise tokens — 500s cascade through frontend-proxy to all users.",
+		"affected_service": "recommendation",
+		"affected_op":      "user.recommend",
 		"signal":           "span_error_rate",
 		"color":            "#ef4444",
 	},
 	{
 		"name":             "cache_miss_storm",
 		"label":            "Cache Miss Storm",
-		"description":      "In-process Caffeine cache OOM kill — every vets request falls back to H2 DB, driving DB CPU to 100% and latency +200 ms.",
-		"affected_service": "vets-service",
-		"affected_op":      "GET vets:*",
+		"description":      "In-process cache OOM kill — every product request falls back to postgresql, driving DB CPU to 100% and latency +200 ms.",
+		"affected_service": "product-catalog",
+		"affected_op":      "GET products:*",
 		"signal":           "span_latency",
 		"color":            "#f97316",
 	},
 	{
 		"name":             "payment_timeout",
 		"label":            "External Timeout",
-		"description":      "Simulated external API partial outage in us-east-1 — visits-service hangs 30 s waiting for the response then returns 504.",
-		"affected_service": "visits-service",
+		"description":      "Simulated external payment API partial outage in us-east-1 — payment-service hangs 30 s waiting for the response then returns 504.",
+		"affected_service": "payment",
 		"affected_op":      "external.charge",
 		"signal":           "span_error_rate",
 		"color":            "#ef4444",
@@ -72,62 +72,62 @@ var scenarioMeta = []map[string]string{
 	{
 		"name":             "latency_spike",
 		"label":            "Latency Spike",
-		"description":      "CPU saturation / GC pressure on visits-service — P99 climbs to 3-6 s with no errors. Silent degradation, harder to triage.",
-		"affected_service": "visits-service",
-		"affected_op":      "visit.schedule",
+		"description":      "CPU saturation / GC pressure on checkout — P99 climbs to 3-6 s with no errors. Silent degradation, harder to triage.",
+		"affected_service": "checkout",
+		"affected_op":      "checkout.place",
 		"signal":           "span_latency",
 		"color":            "#f97316",
 	},
 	{
 		"name":             "oom_crash",
 		"label":            "OOM Crash Loop",
-		"description":      "vets-service JVM heap exhaustion from memory leak — OutOfMemoryError triggers pod restart loop with alternating error bursts.",
-		"affected_service": "vets-service",
-		"affected_op":      "vets.list",
+		"description":      "product-catalog OOM from memory leak — OutOfMemoryError triggers pod restart loop with alternating error bursts.",
+		"affected_service": "product-catalog",
+		"affected_op":      "products.list",
 		"signal":           "span_error_rate",
 		"color":            "#ef4444",
 	},
 	{
 		"name":             "cascading_failure",
 		"label":            "Cascading Failure",
-		"description":      "H2 database disk full — customers-service fails first, then api-gateway starts returning 500s to all callers including visits-service.",
-		"affected_service": "customers-service",
-		"affected_op":      "owner.get",
+		"description":      "postgresql disk full — checkout fails first, then frontend-proxy starts returning 500s to all callers.",
+		"affected_service": "checkout",
+		"affected_op":      "order.get",
 		"signal":           "span_error_rate",
 		"color":            "#dc2626",
 	},
 	{
 		"name":             "new_error_sig",
 		"label":            "New Error Signature",
-		"description":      "customers-service v2.4.0 introduces unhandled AuthorizationException for admin role — a brand-new exception never seen in traces before.",
-		"affected_service": "customers-service",
-		"affected_op":      "owner.update",
+		"description":      "recommendation-service v2.4.0 introduces unhandled AuthorizationException for admin role — a brand-new exception never seen in traces before.",
+		"affected_service": "recommendation",
+		"affected_op":      "recommend.update",
 		"signal":           "error_signature",
 		"color":            "#a855f7",
 	},
 	{
 		"name":             "span_drop",
 		"label":            "Span Drop",
-		"description":      "OTel agent sampling misconfiguration on visits-service drops 90% of spans — service is alive but nearly invisible in traces.",
-		"affected_service": "visits-service",
-		"affected_op":      "visit.schedule",
-		"signal":           "trace_drift",
+		"description":      "OTel agent sampling misconfiguration on checkout drops 90% of spans — service is alive but nearly invisible in traces.",
+		"affected_service": "checkout",
+		"affected_op":      "checkout.place",
+		"signal":           "callgraph_drift",
 		"color":            "#6b7280",
 	},
 	{
 		"name":             "span_spike",
 		"label":            "Traffic Surge",
 		"description":      "10x traffic spike from a marketing campaign — all services hit simultaneously, DB starts queuing, P99 climbs, errors follow.",
-		"affected_service": "api-gateway",
-		"affected_op":      "GET /api/v1/owners",
+		"affected_service": "frontend-proxy",
+		"affected_op":      "GET /api/products",
 		"signal":           "span_latency",
 		"color":            "#eab308",
 	},
 	{
 		"name":             "combined",
 		"label":            "Combined Signals",
-		"description":      "Two simultaneous incidents: visits-service latency spike (thread starvation) + vets-service error rate spike (bad feature flag).",
-		"affected_service": "api-gateway",
+		"description":      "Two simultaneous incidents: checkout latency spike (thread starvation) + product-catalog error rate spike (bad feature flag).",
+		"affected_service": "frontend-proxy",
 		"affected_op":      "multiple",
 		"signal":           "span_error_rate",
 		"color":            "#ec4899",
@@ -135,22 +135,20 @@ var scenarioMeta = []map[string]string{
 	{
 		"name":             "kill_service",
 		"label":            "Kill Service",
-		"description":      "visits-service pod is killed — it emits no spans, callers get connection refused 503s, and the service disappears from the map.",
-		"affected_service": "visits-service",
-		"affected_op":      "visit.schedule",
+		"description":      "checkout pod is killed — it emits no spans, callers get connection refused 503s, and the service disappears from the map.",
+		"affected_service": "checkout",
+		"affected_op":      "checkout.place",
 		"signal":           "missing_service",
 		"color":            "#6b7280",
 	},
 	{
 		"name":             "new_call_path",
 		"label":            "New Call Path",
-		"description":      "A feature flag adds visits-service → audit-service — a brand-new topology edge never seen in baseline. Fires trace_drift with no errors.",
-		"affected_service": "visits-service",
+		"description":      "A feature flag adds checkout → audit-service — a brand-new topology edge never seen in baseline. Fires callgraph_drift with no errors.",
+		"affected_service": "checkout",
 		"affected_op":      "audit.log",
-		"signal":           "trace_drift",
+		"signal":           "callgraph_drift",
 		"color":            "#eab308",
-		"default_warmup":   "360",
-		"warmup_note":      "6 min warmup lets the fingerprint baseline establish before injecting the new edge",
 	},
 }
 
@@ -354,6 +352,18 @@ func (m *scenarioManager) run(w http.ResponseWriter, r *http.Request) {
 		m.logger.Info("scenario completed", zap.String("scenario", req.Scenario))
 	}()
 
+	// Trigger topology refresh + drift detection shortly after the anomaly phase
+	// starts so new edges are detected without waiting for the next 30s tick.
+	anomalyStartDelay := time.Duration(req.WarmupS)*time.Second + 15*time.Second
+	go func() {
+		select {
+		case <-time.After(anomalyStartDelay):
+		case <-ctx.Done():
+			return
+		}
+		m.store.RefreshTopologyAndDetectDrift(context.Background())
+	}()
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"status": "started", "scenario": req.Scenario})
 }
@@ -400,6 +410,9 @@ func (m *scenarioManager) reset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Rebuild topology immediately so the service map shows edges right away
+	// instead of waiting up to 2 minutes for the background ticker.
+	_ = m.store.RefreshTopology(r.Context())
 	m.logger.Info("simulation data reset")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "reset"})

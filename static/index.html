@@ -747,7 +747,7 @@
     <div class="filters">
       <label>Signal Type
         <select id="f-anom-signal">
-          <option value="">All</option>
+          <option value="">All (excl. metrics)</option>
           <option value="metric">Metric</option>
           <option value="span_error_rate">Span Error Rate</option>
           <option value="span_latency">Span Latency</option>
@@ -819,12 +819,16 @@
           </div>
         </div>
         <div class="topo-legend">
+          <span style="font-size:10px;font-weight:600;color:var(--muted);margin-right:4px;text-transform:uppercase;letter-spacing:.05em">Nodes:</span>
           <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#4ecfb3"></div>Healthy</div>
           <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#ef4444"></div>Error Rate</div>
           <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#f97316"></div>Error Sig</div>
-          <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#eab308"></div>Trace Drift</div>
-          <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#f97316"></div>Metric (warning)</div>
-          <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#6b7280; border-style:dashed"></div>Missing</div>
+          <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#eab308"></div>Drift</div>
+          <div class="topo-legend-item"><div class="topo-legend-dot" style="border-color:#6b7280;border-style:dashed"></div>Missing</div>
+          <span style="font-size:10px;font-weight:600;color:var(--muted);margin-left:8px;margin-right:4px;text-transform:uppercase;letter-spacing:.05em">Edges:</span>
+          <div class="topo-legend-item"><div style="width:18px;height:2px;background:#4ecfb3;border-radius:1px"></div>Low errors</div>
+          <div class="topo-legend-item"><div style="width:18px;height:2px;background:#f97316;border-radius:1px"></div>&gt;2% errors</div>
+          <div class="topo-legend-item"><div style="width:18px;height:2px;background:#ef4444;border-radius:1px"></div>&gt;5% errors (6h)</div>
         </div>
       </div>
 
@@ -847,6 +851,22 @@
         <div class="svc-detail-hdr" style="justify-content:space-between">
           <h3 style="margin:0;font-size:14px">Active Incidents</h3>
           <div style="display:flex;align-items:center;gap:8px">
+            <!-- Groups / Services view toggle -->
+            <div style="display:flex;border:1px solid var(--border);border-radius:4px;overflow:hidden">
+              <button id="btn-view-groups" onclick="setIncidentView('groups')"
+                style="background:var(--accent);color:var(--bg);border:none;cursor:pointer;font-size:10px;padding:2px 8px;font-weight:600">
+                Groups
+              </button>
+              <button id="btn-view-services" onclick="setIncidentView('services')"
+                style="background:none;color:var(--muted);border:none;cursor:pointer;font-size:10px;padding:2px 8px">
+                Services
+              </button>
+            </div>
+            <button id="btn-inc-filter" onclick="toggleIncidentsFilter()"
+              style="background:none;border:1px solid var(--border);color:var(--accent);cursor:pointer;font-size:10px;padding:2px 6px;border-radius:4px"
+              title="Currently showing important signals only. Click to show all.">
+              Important
+            </button>
             <button id="btn-clear-resolved" onclick="clearResolvedIncidents()"
               style="background:none;border:1px solid var(--border);color:var(--muted);cursor:pointer;font-size:10px;padding:2px 6px;border-radius:4px">
               Clear Resolved
@@ -862,9 +882,14 @@
           <div class="stat" style="padding:6px 4px"><div class="val" id="s-inc-crit" style="color:var(--red);font-size:18px">—</div><div class="lbl">Critical</div></div>
           <div class="stat" style="padding:6px 4px"><div class="val" id="s-inc-entities" style="font-size:18px">—</div><div class="lbl">Affected</div></div>
           <div class="stat" style="padding:6px 4px"><div class="val" id="s-inc-errsig" style="color:var(--orange);font-size:18px">—</div><div class="lbl">Error Sigs</div></div>
-          <div class="stat" style="padding:6px 4px"><div class="val" id="s-inc-trace" style="color:var(--cyan);font-size:18px">—</div><div class="lbl">Trace Drift</div></div>
+          <div class="stat" style="padding:6px 4px"><div class="val" id="s-inc-trace" style="color:var(--cyan);font-size:18px">—</div><div class="lbl">Call Drift</div></div>
         </div>
-        <div style="overflow-y:auto;max-height:calc(100vh - 360px)">
+        <!-- Groups view -->
+        <div id="incident-groups-view" style="overflow-y:auto;max-height:calc(100vh - 360px)">
+          <div id="incident-groups-body" style="padding:8px 10px"><div class="empty" style="padding:16px">Loading…</div></div>
+        </div>
+        <!-- Services view (hidden by default) -->
+        <div id="incident-services-view" style="display:none;overflow-y:auto;max-height:calc(100vh - 360px)">
           <table style="width:100%;border-collapse:collapse;font-size:12px">
             <tbody id="incidents-body"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
           </table>
@@ -927,6 +952,9 @@
       <div id="sc-phase-cooldown" style="flex:0 0 auto;padding:2px 8px;border-radius:4px;border:1px solid var(--border);color:var(--muted)">Cooldown</div>
     </div>
   </div>
+
+  <!-- Result banner — shown after a scenario finishes -->
+  <div id="sc-result-bar" style="display:none;border-radius:8px;padding:10px 20px;margin:10px 16px 0;font-size:12px"></div>
 
   <!-- Toolbar -->
   <div style="padding:12px 16px 0;display:flex;justify-content:flex-end">
@@ -1393,7 +1421,11 @@ async function loadTraces() {
   const name = document.getElementById('f-span-name').value.trim();
   const p = new URLSearchParams();
   if (tid)  { p.set('trace_id', tid); p.set('limit', 5000); }
-  else      { p.set('traces', document.getElementById('f-span-limit').value || 50); }
+  else {
+    p.set('traces', document.getElementById('f-span-limit').value || 50);
+    // Default: last 2 hours — prevents full-table scan on large DBs
+    p.set('from', String(Date.now() * 1e6 - 2 * 3600 * 1e12));
+  }
   if (name) p.set('name', name);
 
   const res = await api('/v1/query/spans?' + p);
@@ -1830,6 +1862,9 @@ async function loadMetrics() {
   if (name) p.set('name', name);
   if (svc)  p.set('service', svc);
   if (cat && CATEGORY_PREFIXES[cat]) p.set('prefix', CATEGORY_PREFIXES[cat]);
+  // Default: last 2 hours
+  p.set('from', String(Date.now() * 1e6 - 2 * 3600 * 1e12));
+  p.set('to',   String(Date.now() * 1e6));
 
   const res = await api('/v1/query/metrics?' + p);
   const allRows = res?.data || [];
@@ -2000,6 +2035,11 @@ async function loadLogs() {
   if (sev) p.set('severity', sev);
   if (svc) p.set('service', svc);
   if (tid) p.set('trace_id', tid);
+  // Default: last 2 hours
+  if (!tid) {
+    p.set('from', String(Date.now() * 1e6 - 2 * 3600 * 1e12));
+    p.set('to',   String(Date.now() * 1e6));
+  }
 
   // Populate service autocomplete from entity registry
   api('/v1/entities?type=service').then(res => {
@@ -2124,21 +2164,111 @@ function switchSigTab(name, btn) {
 const SIGNAL_LABELS = {
   metric: 'Metric', span_error_rate: 'Error Rate', span_latency: 'Latency',
   trace_drift: 'Trace Drift', error_signature: 'Error Sig', missing_service: 'Missing',
+  correlated_incident: 'Correlated', callgraph_drift: 'Call Graph Drift',
+  recent_change: 'Deploy',
 };
 const SIGNAL_BADGE = {
   metric: 'b-info', span_error_rate: 'b-high', span_latency: 'b-med',
   trace_drift: 'b-cyan', error_signature: 'b-warn', missing_service: 'b-high',
+  correlated_incident: 'b-warn', callgraph_drift: 'b-cyan',
+  recent_change: 'b-warn',
 };
 const SIGNAL_PRIORITY = {
-  missing_service: 6, error_signature: 5, span_error_rate: 4, trace_drift: 3, span_latency: 2, metric: 1,
+  missing_service: 6, error_signature: 5, span_error_rate: 4,
+  trace_drift: 3, correlated_incident: 3,
+  span_latency: 2, metric: 1, callgraph_drift: 1,
 };
 
 
+function setIncidentView(view) {
+  _incidentView = view;
+  document.getElementById('incident-groups-view').style.display    = view === 'groups'   ? '' : 'none';
+  document.getElementById('incident-services-view').style.display  = view === 'services' ? '' : 'none';
+  const bg = document.getElementById('btn-view-groups');
+  const bs = document.getElementById('btn-view-services');
+  if (bg && bs) {
+    bg.style.background = view === 'groups'   ? 'var(--accent)' : 'none';
+    bg.style.color      = view === 'groups'   ? 'var(--bg)'     : 'var(--muted)';
+    bs.style.background = view === 'services' ? 'var(--accent)' : 'none';
+    bs.style.color      = view === 'services' ? 'var(--bg)'     : 'var(--muted)';
+  }
+}
+
+function renderIncidentGroups(groups) {
+  const el = document.getElementById('incident-groups-body');
+  if (!el) return;
+  const active   = (groups || []).filter(g => g.status === 'active');
+  const resolved = (groups || []).filter(g => g.status === 'resolved');
+  if (!active.length && !resolved.length) {
+    el.innerHTML = '<div class="empty" style="padding:16px;text-align:center">No incident groups yet — grouper runs every 90s after anomalies fire.</div>';
+    return;
+  }
+  function groupCard(g, isResolved) {
+    const affected = (() => { try { return JSON.parse(g.affected_entities); } catch { return [g.root_entity_id]; } })();
+    const sigs     = (() => { try { return JSON.parse(g.signal_types); } catch { return []; } })();
+    const sevCls   = isResolved ? 'b-info' : (g.severity === 'critical' ? 'b-high' : 'b-med');
+    const cardBg   = isResolved ? 'opacity:.5;' : '';
+    const borderL  = g.severity === 'critical' ? 'border-left:3px solid var(--red)' : 'border-left:3px solid var(--orange)';
+    if (isResolved) { /* skip border for resolved */ }
+    const affectedChips = affected.map(s =>
+      `<span style="background:var(--surface);border:1px solid var(--border);border-radius:3px;padding:1px 5px;font-size:10px;font-family:monospace;
+        ${s === g.root_entity_id ? 'color:var(--fg);font-weight:700' : 'color:var(--muted)'}">${esc(s)}</span>`
+    ).join(' ');
+    const sigBadges = sigs.map(s => {
+      const cls = SIGNAL_BADGE[s] || 'b-info';
+      return `<span class="badge ${cls}" style="font-size:9px">${SIGNAL_LABELS[s] || s}</span>`;
+    }).join(' ');
+    const age = fmtAge(g.last_seen_ns / 1e9);
+    const multiService = affected.length > 1 ? `<span style="font-size:10px;color:var(--muted);margin-left:4px">${affected.length} services</span>` : '';
+    return `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;${cardBg}${isResolved ? '' : borderL}">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          <span class="badge ${sevCls}" style="font-size:10px">${isResolved ? '✓ resolved' : g.severity}</span>
+          <span style="font-family:monospace;font-size:12px;font-weight:700;color:var(--fg)">${esc(g.root_entity_id)}</span>
+          ${multiService}
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <span style="font-size:10px;color:var(--muted)">${age}</span>
+          ${!isResolved ? `<button class="btn-rca-sm" onclick="openRCAFromAnomaly('${esc(g.root_entity_id)}',${g.last_seen_ns},0)">RCA</button>` : ''}
+        </div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">${esc(g.description)}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+        ${affectedChips}
+        <span style="color:var(--border)">|</span>
+        ${sigBadges || '<span style="font-size:10px;color:var(--muted)">no signals</span>'}
+      </div>
+    </div>`;
+  }
+  let html = active.map(g => groupCard(g, false)).join('');
+  if (resolved.length) {
+    html += `<div style="font-size:10px;color:var(--muted);padding:4px 0 2px;border-top:1px solid var(--border);margin-top:4px">Resolved</div>`;
+    html += resolved.map(g => groupCard(g, true)).join('');
+  }
+  el.innerHTML = html;
+}
+
+function toggleIncidentsFilter() {
+  _incidentsShowAll = !_incidentsShowAll;
+  const btn = document.getElementById('btn-inc-filter');
+  if (btn) {
+    btn.textContent = _incidentsShowAll ? 'All' : 'Important';
+    btn.style.color = _incidentsShowAll ? 'var(--muted)' : 'var(--accent)';
+    btn.title = _incidentsShowAll
+      ? 'Showing all signals. Click to show important only.'
+      : 'Currently showing important signals only. Click to show all.';
+  }
+  loadIncidents();
+}
+
 async function loadIncidents() {
-  const [res, entRes] = await Promise.all([
-    api('/v1/incidents'),
+  const endpoint = _incidentsShowAll ? '/v1/incidents?all=true' : '/v1/incidents';
+  const [res, entRes, groupRes] = await Promise.all([
+    api(endpoint),
     _currentEnv ? api(`/v1/entities?type=service&env=${encodeURIComponent(_currentEnv)}`) : Promise.resolve(null),
+    api('/v1/incident-groups?limit=50'),
   ]);
+  renderIncidentGroups(groupRes?.groups || []);
   let incidents = res?.data || [];
 
   // Filter to current environment — incidents don't carry env directly, so match via entity IDs
@@ -2173,7 +2303,7 @@ async function loadIncidents() {
   const critCount     = active.filter(i => i.severity === 'critical').length;
   const entitySet     = new Set(active.map(i => i.entity_id));
   const errSigCount   = active.filter(i => (i.signals?.error_signature || 0) > 0).length;
-  const traceDriftCnt = active.filter(i => (i.signals?.trace_drift || 0) > 0).length;
+  const traceDriftCnt = active.filter(i => (i.signals?.trace_drift || 0) + (i.signals?.callgraph_drift || 0) > 0).length;
 
   document.getElementById('s-inc-count').textContent    = active.length;
   document.getElementById('s-inc-crit').textContent     = critCount;
@@ -2237,13 +2367,16 @@ async function loadAnomalies() {
   const res = await api('/v1/query/anomalies?' + p);
   let rows = res?.data || [];
 
-  // Client-side filter for signal_type and severity
+  // Client-side filter for signal_type and severity.
+  // Default ("") excludes metric anomalies — too noisy for dashboard view.
+  // Select "Metric" in the dropdown to show them explicitly.
   const sigFilter = document.getElementById('f-anom-signal').value;
   const sevFilter = document.getElementById('f-anom-severity').value;
-  if (sigFilter) rows = rows.filter(r => r.signal_type === sigFilter);
+  rows = sigFilter ? rows.filter(r => r.signal_type === sigFilter)
+                   : rows.filter(r => r.signal_type !== 'metric');
   if (sevFilter) rows = rows.filter(r => r.severity === sevFilter);
 
-  const _nowNs = Date.now() * 1e6, _resNs = 30 * 1e9;
+  const _nowNs = Date.now() * 1e6, _resNs = 30 * 60 * 1e9;
   const active = rows.filter(r => r.detected_at >= _nowNs - _resNs);
   document.getElementById('s-anom-count').textContent  = active.length;
   document.getElementById('s-anom-crit').textContent   = active.filter(r => r.severity === 'critical').length;
@@ -2257,7 +2390,7 @@ async function loadAnomalies() {
     return;
   }
   const nowNs = Date.now() * 1e6;
-  const resolvedThresholdNs = 30 * 1e9; // must match server/query.go
+  const resolvedThresholdNs = 30 * 60 * 1e9; // must match server/query.go
   tbody.innerHTML = rows.map(r => {
     const isResolved = r.detected_at < nowNs - resolvedThresholdNs;
     const sevCls  = isResolved ? 'b-info' : (r.severity === 'critical' ? 'b-high' : 'b-med');
@@ -2292,9 +2425,13 @@ let _svcEntities     = [];
 let _svcEdges           = [];
 let _anomalyByEntity    = {}; // entityId → worst signal_type
 let _currentEnv         = '';
+let _incidentsShowAll   = false;
+let _incidentView       = 'groups'; // 'groups' | 'services'
 let _d3Simulation       = null;
 let _topoNodePositions  = {}; // entityId → {x,y}  — persists across renders
 let _topoFingerprint    = ''; // last rendered node+edge set
+let _topoNodeFp         = ''; // last rendered node set only (changes less often)
+let _svcTableFp         = ''; // fingerprint for service table rows
 window._ndService    = null;
 
 async function loadEnvironments() {
@@ -2302,29 +2439,15 @@ async function loadEnvironments() {
   const envs = res?.environments || [];
   const sel = document.getElementById('env-sel');
   if (!sel) return;
-  // On first load, default to the env with the most recently-active entity
-  if (!_currentEnv && envs.length) {
-    if (envs.length === 1) {
-      _currentEnv = envs[0];
-    } else {
-      // Pick whichever env has the most recent last_seen_ns across its entities
-      const results = await Promise.all(envs.map(e =>
-        api(`/v1/entities?type=service&env=${encodeURIComponent(e)}`).then(r => {
-          const entities = r?.data || [];
-          const latest = entities.reduce((mx, ent) => Math.max(mx, ent.last_seen_ns || 0), 0);
-          return { env: e, latest };
-        })
-      ));
-      results.sort((a, b) => b.latest - a.latest);
-      _currentEnv = results[0].env;
-    }
-  }
+  // Always stay on "All environments" — avoids hiding real services when only
+  // the simulator has an env tag.
   sel.innerHTML = '<option value="">All environments</option>' +
     envs.map(e => `<option value="${esc(e)}"${e===_currentEnv?' selected':''}>${esc(e)}</option>`).join('');
 }
 
 function switchEnv(env) {
   _currentEnv = env;
+  _svcTableFp = ''; // force table re-render on env switch
   loadServices();
 }
 
@@ -2338,7 +2461,12 @@ async function loadServices() {
     api('/v1/genai/agents'),
   ]);
   _svcEntities = entRes?.data  || [];
-  _svcEdges    = topoRes?.data || [];
+  // Filter edges to only those between visible entities (respects env filter).
+  // Without this, the topology map renders ALL services even when an env is selected.
+  const _entitySet = new Set(_svcEntities.map(e => e.entity_id));
+  _svcEdges = (topoRes?.data || []).filter(e =>
+    _entitySet.has(e.source_service) && _entitySet.has(e.target_service)
+  );
 
   // Build genai agent lookup by entity_id for service table enrichment.
   _genaiAgentsByEntity = {};
@@ -2356,15 +2484,22 @@ async function loadServices() {
   // Build anomaly health map (highest-priority signal + CPU value per entity)
   // genai_* signals sit between metric(1) and span_latency(2) in priority.
   const sigPrio = {
-    error_signature: 5, span_error_rate: 4, trace_drift: 3, span_latency: 2,
-    genai_cost_spike: 2, genai_latency_drift: 2, genai_context_bloat: 2, metric: 1,
+    error_signature: 5, span_error_rate: 4, trace_drift: 3, correlated_incident: 3,
+    span_latency: 2, genai_cost_spike: 2, genai_latency_drift: 2, genai_context_bloat: 2,
+    callgraph_drift: 1,
+    // metric intentionally excluded — metric-only anomalies don't color topology nodes
   };
-  // Only consider anomalies from the last 30 seconds for topology node coloring —
-  // matching the resolved threshold. A node goes healthy the moment the anomaly
-  // stops firing, keeping topology in sync with the incidents resolved state.
-  const topoAnomalyCutoffNs = (Date.now() - 30 * 1000) * 1e6;
+  // Repeating signals (error rate, latency) use a 30s window — node goes healthy the
+  // moment they stop firing. One-shot signals (callgraph_drift, error_signature,
+  // trace_drift) fire once and never repeat, so use a 30-minute window instead.
+  const repeatingCutoffNs  = (Date.now() -    30 * 1000) * 1e6;
+  const oneshotCutoffNs    = (Date.now() - 1800 * 1000) * 1e6;
+  const oneshotSignals = new Set(['callgraph_drift','trace_drift','error_signature']);
   _anomalyByEntity = {};
-  (anomRes?.data || []).filter(a => a.detected_at >= topoAnomalyCutoffNs).forEach(a => {
+  (anomRes?.data || []).filter(a => {
+    const cutoff = oneshotSignals.has(a.signal_type) ? oneshotCutoffNs : repeatingCutoffNs;
+    return a.detected_at >= cutoff;
+  }).forEach(a => {
     if (!a.entity_id) return;
     if (!_anomalyByEntity[a.entity_id]) _anomalyByEntity[a.entity_id] = { signal: null, severity: null, cpu: 0 };
     const cur = _anomalyByEntity[a.entity_id];
@@ -2378,7 +2513,7 @@ async function loadServices() {
   });
 
   // Stats
-  const errEdges = _svcEdges.filter(e => e.call_count > 0 && e.error_count / e.call_count > 0.05).length;
+  const errEdges = _svcEdges.filter(e => e.call_count >= 10 && e.error_count / e.call_count > 0.05).length;
   document.getElementById('s-svc-count').textContent  = _svcEntities.length;
   document.getElementById('s-svc-edges').textContent  = _svcEdges.length;
   document.getElementById('s-svc-errors').textContent = errEdges;
@@ -2398,10 +2533,12 @@ function nodeHealthState(entityId) {
   if (sig === 'genai_cost_spike')   return 'topo-errorrate';
   if (sig === 'genai_context_bloat') return 'topo-errorrate';
   if (sig === 'genai_latency_drift') return 'topo-latency';
-  if (sig === 'metric') {
+  if (sig === 'correlated_incident') {
     const sev = _anomalyByEntity[entityId]?.severity;
-    return sev === 'critical' ? 'topo-errorrate' : 'topo-latency';
+    return sev === 'critical' ? 'topo-errorrate' : 'topo-error';
   }
+  if (sig === 'callgraph_drift')    return 'topo-drift';
+  if (sig === 'metric') return 'topo-healthy'; // metric-only anomalies don't affect node color
   return 'topo-new';
 }
 
@@ -2414,40 +2551,79 @@ function renderServiceMap(entities, edges) {
     _topoFingerprint = '';
     return;
   }
+  // Only show nodes that participate in at least one edge.
+  // Isolated nodes (k8s infra pods, OTel collector, etc.) have no call-graph
+  // connections and only add visual clutter to the service map.
+  const edgeEndpoints = new Set();
+  edges.forEach(e => { edgeEndpoints.add(e.source_service); edgeEndpoints.add(e.target_service); });
+  entities = entities.filter(e => edgeEndpoints.has(e.entity_id));
   hint.textContent = `${entities.length} services · ${edges.length} edges`;
 
-  // Compute topology fingerprint to detect structural changes
+  // Compute topology fingerprint — split into node-set and edge-set so we can
+  // handle the two cases separately without a full SVG teardown each time.
   const nodeIds = entities.map(e => e.entity_id).sort();
   const nodeSet = new Set(nodeIds);
   // Include inferred external service nodes (DB, etc.) from edge targets not in entities
   const inferredIds = [...new Set(edges.map(e => e.target_service).filter(t => !nodeSet.has(t)))].sort();
   const allNodeSet = new Set([...nodeSet, ...inferredIds]);
   const filteredEdges = edges.filter(e => nodeSet.has(e.source_service) && allNodeSet.has(e.target_service));
-  const edgeKeys = filteredEdges.map(e => `${e.source_service}→${e.target_service}`).sort();
-  const fingerprint = nodeIds.join(',') + '|' + inferredIds.join(',') + '|' + edgeKeys.join(',');
+  // Include quantized error bucket so threshold crossings trigger a redraw (Case 2)
+  const edgeKeys = filteredEdges.map(e => {
+    const er = e.call_count >= 10 ? e.error_count / e.call_count : 0;
+    const eb = er > 0.1 ? 'hot' : er > 0.05 ? 'err' : 'ok';
+    return `${e.source_service}→${e.target_service}:${eb}`;
+  }).sort();
+  // nodeFp tracks ONLY real instrumented services — inferred external nodes (DB, etc.)
+  // come and go with edges and must NOT trigger a full SVG rebuild (Case 3).
+  const nodeFp = nodeIds.join(',');
+  const fingerprint = nodeFp + '|' + inferredIds.join(',') + '|' + edgeKeys.join(',');
 
-  // Same topology → fast visual-only update, no DOM rebuild or re-simulation
-  if (fingerprint === _topoFingerprint && container.querySelector('svg')) {
-    const svgSel = d3.select(container).select('svg');
-    svgSel.selectAll('.topo-node').attr('class', d => 'topo-node ' + nodeHealthState(d.id));
-    const edgeData = {};
+  // Helper: update node health CSS classes without restarting animations
+  function updateNodeColors() {
+    d3.select(container).select('svg').selectAll('.topo-node').each(function(d) {
+      const cls = 'topo-node ' + nodeHealthState(d.id);
+      if (this.getAttribute('class') !== cls) this.setAttribute('class', cls);
+    });
+  }
+
+  // Helper: redraw all edges in-place from saved positions (no SVG teardown)
+  function redrawEdgesInPlace() {
+    updateNodeColors();
+    const gSel = d3.select(container).select('svg').select('g');
+    gSel.selectAll('line').remove();
+    const R = 24;
     filteredEdges.forEach(e => {
-      edgeData[`${e.source_service}→${e.target_service}`] = {
-        err_rate: e.call_count > 0 ? e.error_count / e.call_count : 0,
-        call_count: e.call_count,
-      };
+      const sp = _topoNodePositions[e.source_service];
+      const tp = _topoNodePositions[e.target_service];
+      if (!sp || !tp) return;
+      const dx = tp.x - sp.x, dy = tp.y - sp.y, l = Math.hypot(dx, dy) || 1;
+      const er = e.call_count >= 10 ? e.error_count / e.call_count : 0;
+      gSel.insert('line', '.topo-node')
+        .attr('class', er > 0.1 ? 'topo-edge-hot' : er > 0.05 ? 'topo-edge-err' : 'topo-edge')
+        .attr('stroke-width', 1.5)
+        .attr('marker-end', er > 0.1 ? 'url(#arr-red)' : er > 0.02 ? 'url(#arr-orange)' : 'url(#arr-green)')
+        .attr('x1', sp.x + dx/l*R).attr('y1', sp.y + dy/l*R)
+        .attr('x2', tp.x - dx/l*R).attr('y2', tp.y - dy/l*R);
     });
-    svgSel.selectAll('line').each(function(d) {
-      const k = `${d.source.id||d.source}→${d.target.id||d.target}`;
-      const ed = edgeData[k] || {err_rate:0, call_count:0};
-      d3.select(this)
-        .attr('class', ed.err_rate > 0.1 ? 'topo-edge-hot' : ed.err_rate > 0.05 ? 'topo-edge-err' : 'topo-edge')
-        .attr('stroke-width', Math.max(1.5, Math.min(5, ed.call_count / 40)))
-        .attr('marker-end', ed.err_rate > 0.1 ? 'url(#arr-red)' : ed.err_rate > 0.02 ? 'url(#arr-orange)' : 'url(#arr-green)');
-    });
+  }
+
+  // Case 1: nothing changed — only update health colors (no edge DOM churn, no animation restart)
+  if (fingerprint === _topoFingerprint && container.querySelector('svg')) {
+    updateNodeColors();
     return;
   }
+
+  // Case 2: only edges changed, node set is identical — redraw edges in-place,
+  // no SVG teardown, no re-simulation, no flicker
+  if (nodeFp === _topoNodeFp && container.querySelector('svg')) {
+    _topoFingerprint = fingerprint;
+    redrawEdgesInPlace();
+    return;
+  }
+
+  // Case 3: node set changed — full rebuild (rare after initial warmup)
   _topoFingerprint = fingerprint;
+  _topoNodeFp = nodeFp;
   container.querySelector('svg')?.remove();
 
   // Parse k8s node groupings from entity attrs
@@ -2473,19 +2649,20 @@ function renderServiceMap(entities, edges) {
   const nodes = [
     ...entities.map(e => {
       const saved = _topoNodePositions[e.entity_id];
+      // Pin nodes with saved positions so they never move during re-simulation
       return {id: e.entity_id, last_seen_ns: e.last_seen_ns, inferred: false,
-        ...(saved ? {x: saved.x, y: saved.y} : {})};
+        ...(saved ? {x: saved.x, y: saved.y, fx: saved.x, fy: saved.y} : {})};
     }),
     ...inferredIds.map(id => {
       const saved = _topoNodePositions[id];
       return {id, last_seen_ns: 0, inferred: true,
-        ...(saved ? {x: saved.x, y: saved.y} : {})};
+        ...(saved ? {x: saved.x, y: saved.y, fx: saved.x, fy: saved.y} : {})};
     }),
   ];
   const links = filteredEdges.map(e => ({
     source:     e.source_service,
     target:     e.target_service,
-    err_rate:   e.call_count > 0 ? e.error_count / e.call_count : 0,
+    err_rate:   e.call_count >= 10 ? e.error_count / e.call_count : 0,
     call_count: e.call_count,
   }));
 
@@ -2507,12 +2684,62 @@ function renderServiceMap(entities, edges) {
     };
   });
 
+  // BFS depth seeding — assign each node a column based on graph distance from
+  // root nodes (nodes with no incoming edges).  This seeds initial x positions
+  // so the force simulation starts close to a left-to-right hierarchical layout
+  // instead of a random scatter.
+  const _inEdges  = {};
+  const _outEdges = {};
+  nodes.forEach(n => { _inEdges[n.id] = []; _outEdges[n.id] = []; });
+  links.forEach(l => {
+    const s = typeof l.source === 'object' ? l.source.id : l.source;
+    const t = typeof l.target === 'object' ? l.target.id : l.target;
+    if (_outEdges[s]) _outEdges[s].push(t);
+    if (_inEdges[t])  _inEdges[t].push(s);
+  });
+  const _depth = {};
+  const _roots = nodes.filter(n => (_inEdges[n.id]||[]).length === 0).map(n => n.id);
+  if (!_roots.length && nodes.length) _roots.push(nodes[0].id);
+  const _bfsQ = _roots.map(r => [r, 0]);
+  while (_bfsQ.length) {
+    const [id, d] = _bfsQ.shift();
+    if (_depth[id] !== undefined) continue;
+    _depth[id] = d;
+    (_outEdges[id]||[]).forEach(t => { if (_depth[t] === undefined) _bfsQ.push([t, d + 1]); });
+  }
+  const _maxDepth = Math.max(0, ...Object.values(_depth));
+  nodes.forEach(n => { if (_depth[n.id] === undefined) _depth[n.id] = _maxDepth; });
+
+  // Seed initial positions for nodes that haven't been manually dragged
+  const _colW = (W - 80) / (_maxDepth + 1);
+  nodes.forEach((n, i) => {
+    if (!_topoNodePositions[n.id]) {
+      // Spread nodes within each column vertically
+      const sameDepth = nodes.filter(x => _depth[x.id] === _depth[n.id]);
+      const slotH = H / (sameDepth.length + 1);
+      const slot = sameDepth.indexOf(n);
+      n.x = 40 + (_depth[n.id] + 0.5) * _colW;
+      n.y = slotH * (slot + 1);
+    }
+  });
+
   if (_d3Simulation) _d3Simulation.stop();
   _d3Simulation = d3.forceSimulation(nodes)
     .force('link',    d3.forceLink(links).id(d => d.id).distance(130))
-    .force('charge',  d3.forceManyBody().strength(-320))
+    .force('charge',  d3.forceManyBody().strength(-500))
     .force('center',  d3.forceCenter(W / 2, H / 2))
-    .force('collide', d3.forceCollide(46));
+    .force('collide', d3.forceCollide(58))
+    .force('x',       d3.forceX(d => 40 + (_depth[d.id] + 0.5) * _colW).strength(0.4))
+    .force('y',       d3.forceY(H / 2).strength(0.08))
+    .stop(); // Don't animate — pre-tick synchronously to place new nodes instantly
+
+  // Only run physics for new nodes (no saved position); existing nodes are pinned above
+  const _hasNewNodes = nodes.some(n => !_topoNodePositions[n.id]);
+  if (_hasNewNodes) {
+    for (let _i = 0; _i < 500; _i++) _d3Simulation.tick();
+  }
+  // Save all final positions and unpin so drag works freely afterward
+  nodes.forEach(n => { _topoNodePositions[n.id] = {x: n.x, y: n.y}; n.fx = null; n.fy = null; });
 
   // Tooltip div (shared)
   let ttDiv = document.getElementById('topo-tt');
@@ -2529,7 +2756,7 @@ function renderServiceMap(entities, edges) {
   // Edges — thickness by call volume, color+pulse by error rate; hidden until first tick
   const link = g.append('g').selectAll('line').data(links).enter().append('line')
     .attr('class', d => d.err_rate > 0.1 ? 'topo-edge-hot' : d.err_rate > 0.05 ? 'topo-edge-err' : 'topo-edge')
-    .attr('stroke-width', d => Math.max(1.5, Math.min(5, d.call_count / 40)))
+    .attr('stroke-width', 1.5)
     .attr('marker-end', d => d.err_rate > 0.1 ? 'url(#arr-red)' : d.err_rate > 0.02 ? 'url(#arr-orange)' : 'url(#arr-green)')
     .attr('opacity', 0)  // hidden until simulation places nodes
     .on('mouseover', (ev, d) => showTT(ev,
@@ -2544,7 +2771,7 @@ function renderServiceMap(entities, edges) {
     .call(d3.drag()
       .on('start', (ev, d) => { if (!ev.active) _d3Simulation.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
       .on('drag',  (ev, d) => { d.fx=ev.x; d.fy=ev.y; })
-      .on('end',   (ev, d) => { if (!ev.active) _d3Simulation.alphaTarget(0); d.fx=null; d.fy=null; }))
+      .on('end',   (ev, d) => { if (!ev.active) _d3Simulation.alphaTarget(0); _topoNodePositions[d.id]={x:d.x,y:d.y}; d.fx=null; d.fy=null; }))
     .on('click', (ev, d) => { if (!d.inferred) { ev.stopPropagation(); openNodeDrawer(d); } })
     .on('mouseover', (ev, d) => {
       if (d.inferred) {
@@ -2612,22 +2839,16 @@ function renderServiceMap(entities, edges) {
     }
   });
 
-  let edgesShown = false;
-  _d3Simulation.on('tick', () => {
-    if (!edgesShown) { link.attr('opacity', null); edgesShown = true; }
-    // Cache positions so next render can seed from them (prevents layout jump on refresh)
-    if (_d3Simulation.alpha() < 0.05) {
-      nodes.forEach(n => { _topoNodePositions[n.id] = {x: n.x, y: n.y}; });
-    }
-    const R = 24; // node circle radius — shorten lines so arrowhead is visible
+  // Static render function — called once on load and on each drag tick
+  function applyPositions() {
+    const R = 24; // node radius — shorten lines so arrowhead is visible
     link
       .attr('x1', d => { const dx=d.target.x-d.source.x, dy=d.target.y-d.source.y, l=Math.hypot(dx,dy)||1; return d.source.x+dx/l*R; })
       .attr('y1', d => { const dx=d.target.x-d.source.x, dy=d.target.y-d.source.y, l=Math.hypot(dx,dy)||1; return d.source.y+dy/l*R; })
       .attr('x2', d => { const dx=d.target.x-d.source.x, dy=d.target.y-d.source.y, l=Math.hypot(dx,dy)||1; return d.target.x-dx/l*R; })
       .attr('y2', d => { const dx=d.target.x-d.source.x, dy=d.target.y-d.source.y, l=Math.hypot(dx,dy)||1; return d.target.y-dy/l*R; });
     node.attr('transform', d => `translate(${d.x},${d.y})`);
-
-    // Update k8s zone hull shapes on each tick
+    // Update k8s zone hull shapes
     zonePaths.forEach(({members, path, label}) => {
       if (members.length === 1) {
         const n = members[0];
@@ -2644,6 +2865,19 @@ function renderServiceMap(entities, edges) {
         }
       }
     });
+  }
+
+  // Render the settled layout immediately (no animation)
+  link.attr('opacity', null);
+  applyPositions();
+
+  // Live ticks only happen during drag; save positions when drag ends
+  _d3Simulation.on('tick', () => {
+    applyPositions();
+    if (_d3Simulation.alpha() < 0.01) {
+      nodes.forEach(n => { _topoNodePositions[n.id] = {x: n.x, y: n.y}; });
+      _d3Simulation.stop();
+    }
   });
 
   svg.on('click', () => closeNodeDrawer());
@@ -2718,12 +2952,20 @@ function renderServiceTable(entities, edges) {
     inbound[e.target_service]  = (inbound[e.target_service]  || 0) + 1;
   });
 
+  // Sort alphabetically for a stable display regardless of last_seen_ns ordering from API.
+  const sorted = [...entities].sort((a, b) => a.entity_id.localeCompare(b.entity_id));
+
+  // Skip re-render when entity set + health state + edge counts haven't changed
+  const newFp = sorted.map(e => `${e.entity_id}:${nodeHealthState(e.entity_id)}:${inbound[e.entity_id]||0}:${outbound[e.entity_id]||0}`).join(',');
   const tbody = document.getElementById('svc-table-body');
-  if (!entities.length) {
+  if (newFp === _svcTableFp && tbody.children.length) return;
+  _svcTableFp = newFp;
+
+  if (!sorted.length) {
     tbody.innerHTML = '<tr><td colspan="5" class="empty">No services discovered yet.</td></tr>';
     return;
   }
-  tbody.innerHTML = entities.map(e => {
+  tbody.innerHTML = sorted.map(e => {
     const lastSeen = e.last_seen_ns ? fmtTime(e.last_seen_ns) : '—';
     const ai = _genaiAgentsByEntity[e.entity_id];
     let col3, col4;
@@ -3040,12 +3282,43 @@ function renderRCAMap(r) {
 
 function renderRCAResult(r) {
   const h = r.health, b = r.baseline;
+  const activeSignal = _anomalyByEntity[r.entity]?.signal;
+  const correlatedBanner = activeSignal === 'correlated_incident' ? `
+    <div style="background:#7c3aed20;border:1px solid #7c3aed60;border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px">
+      <span style="font-size:20px;line-height:1">&#128279;</span>
+      <div>
+        <div style="font-size:13px;font-weight:700;color:#a78bfa">Correlated Incident</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px">Multiple signal types co-occurred on this entity. Check the <b>Anomalies</b> tab below for component signals.</div>
+      </div>
+    </div>` : '';
   const missingBanner = r.is_missing ? `
     <div style="background:#ef444415;border:1px solid #ef4444;border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:12px">
       <span style="font-size:22px;line-height:1">&#128683;</span>
       <div>
         <div style="font-size:13px;font-weight:700;color:#ef4444">Service Unreachable</div>
         <div style="font-size:11px;color:var(--muted);margin-top:2px">${esc(r.entity)} is not reporting telemetry — pod is likely down or crashed</div>
+      </div>
+    </div>` : '';
+
+  // Active anomalies banner — show what triggered this RCA
+  const activeAnoms = (r.active_anomalies || []).filter(a => a.signal_type !== 'missing_service');
+  const signalsBanner = activeAnoms.length ? `
+    <div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:14px">
+      <div style="font-size:9px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">
+        &#9888; Signals That Triggered This Incident
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        ${activeAnoms.map(a => {
+          const sev = a.severity === 'critical' ? '#ef4444' : '#f97316';
+          const label = SIGNAL_LABELS[a.signal_type] || a.signal_type;
+          const badge = SIGNAL_BADGE[a.signal_type] || 'b-warn';
+          const ts = a.detected_at < 1e13 ? a.detected_at * 1000 : a.detected_at / 1e6;
+          return `<div style="display:flex;align-items:flex-start;gap:8px">
+            <span class="badge ${badge}" style="font-size:10px;white-space:nowrap;flex-shrink:0">${esc(label)}</span>
+            <span style="font-size:11px;color:var(--fg);flex:1">${esc(a.description||a.metric_name||'')}</span>
+            <span style="font-size:10px;color:var(--muted);white-space:nowrap">${fmtTime(ts*1e6)}</span>
+          </div>`;
+        }).join('')}
       </div>
     </div>` : '';
 
@@ -3117,27 +3390,39 @@ function renderRCAResult(r) {
     </div>`;
   }
 
-  const causeCards = (r.candidate_causes || []).map((c, i) => {
+  const TYPE_LABEL = {
+    service_down:     'Service Down',
+    downstream_error: 'Downstream Error',
+    infra_pressure:   'Infra Pressure',
+    upstream_spike:   'Traffic Spike',
+    error_signature:  'New Error Pattern',
+    trace_drift:      'New Call Path',
+    self_error:       'Self Error Rate',
+    self_latency:     'Self Latency',
+    self_infra:       'Self CPU/Memory',
+    recent_change:    'Recent Change',
+  };
+  const TYPE_COLOR = {
+    service_down:     '#ef4444',
+    downstream_error: '#f97316',
+    error_signature:  '#f97316',
+    recent_change:    '#f97316',
+    trace_drift:      'var(--cyan)',
+    self_error:       'var(--red)',
+    self_latency:     '#f97316',
+    self_infra:       '#f97316',
+  };
+  const allCauses = r.candidate_causes || [];
+  const causeCards = allCauses.slice(0, 6).map((c, i) => {
     const pct = Math.round(c.confidence * 100);
-    const confColor = pct >= 70 ? 'var(--red)' : pct >= 45 ? '#f97316' : '#eab308';
-    const typeLabel = {
-      service_down:    'Service Down',
-      downstream_error: 'Downstream Error', infra_pressure: 'Infra Pressure',
-      upstream_spike: 'Traffic Spike', error_signature: 'New Error Pattern',
-      trace_drift: 'New Call Path', self_error: 'Self Error Rate',
-      self_infra: 'Self CPU/Memory',
-    }[c.cause_type] || c.cause_type;
-    const typeColor = c.cause_type === 'service_down'    ? '#ef4444'
-                    : c.cause_type === 'error_signature' ? '#f97316'
-                    : c.cause_type === 'trace_drift'     ? 'var(--cyan)'
-                    : c.cause_type === 'self_error'      ? 'var(--red)'
-                    : c.cause_type === 'self_infra'      ? '#f97316'
-                    : 'var(--muted)';
+    const confColor = pct >= 70 ? 'var(--red)' : pct >= 50 ? '#f97316' : '#eab308';
+    const typeLabel = TYPE_LABEL[c.cause_type] || c.cause_type;
+    const typeColor = TYPE_COLOR[c.cause_type] || 'var(--muted)';
     return `
     <div style="background:var(--bg);border:1px solid ${i===0?'var(--red)':'var(--border)'};border-radius:8px;padding:12px;margin-bottom:8px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          ${i===0?'<span style="background:#ef444422;color:#ef4444;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:700">TOP CANDIDATE</span>':''}
+          ${i===0?'<span style="background:#ef444422;color:#ef4444;padding:1px 7px;border-radius:4px;font-size:10px;font-weight:700">TOP</span>':''}
           <span style="font-weight:600;font-size:13px;font-family:monospace">${esc(c.entity_id)}</span>
           <span style="background:var(--surface);color:${typeColor};padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600">${esc(typeLabel)}</span>
         </div>
@@ -3208,6 +3493,8 @@ function renderRCAResult(r) {
     </div>` : '';
 
   return `
+  ${signalsBanner}
+  ${correlatedBanner}
   ${missingBanner}
   <div style="display:grid;grid-template-columns:44% 56%;gap:16px;align-items:start">
     <!-- Left: health cards + neighbor tables -->
@@ -3226,14 +3513,19 @@ function renderRCAResult(r) {
     <!-- Right: topology map + candidates + AI -->
     <div>
       ${renderRCAMap(r)}
-      <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Candidate Causes</div>
+      <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">Candidate Causes ${allCauses.length > 6 ? `<span style="font-weight:400;color:var(--muted)">(showing 6 of ${allCauses.length})</span>` : ''}</div>
       ${causeCards || '<div style="color:var(--muted);font-size:12px;padding:8px 0">No strong candidates found — service may be the origin, or insufficient data in the window.</div>'}
       ${traceFPTable}
       ${errSigTable}
       <div style="margin-top:14px">
-        <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">AI Summary</div>
-        <div id="rca-narrative" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;color:var(--muted)">
-          ${r.narrative ? `<div style="line-height:1.7;font-size:13px;color:var(--fg)">${esc(r.narrative)}</div>` : 'Click "AI Summary" to generate an explanation using AWS Bedrock.'}
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div style="font-size:10px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.08em">Summary</div>
+          <button onclick="runRCAWithAI()" style="background:none;border:1px solid var(--border);color:var(--cyan);cursor:pointer;font-size:10px;padding:2px 6px;border-radius:4px" title="Upgrade with AWS Bedrock AI">AI ✦</button>
+        </div>
+        <div id="rca-narrative" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px">
+          ${r.narrative
+            ? `<div style="line-height:1.7;font-size:13px;color:var(--fg)">${esc(r.narrative)}</div>`
+            : '<div style="color:var(--muted);font-size:12px">No summary available.</div>'}
         </div>
       </div>
     </div>
@@ -3252,10 +3544,16 @@ async function loadRCAEvidence(r) {
   const toNs   = r.incident_ts;
   const svc    = r.entity;
 
-  const [spanRes, logRes, metricRes] = await Promise.all([
+  // changes uses Unix seconds; look back 2h before incident
+  const fromSecs = Math.floor((r.incident_ts - 2*3600*1e9) / 1e9);
+  const toSecs   = Math.floor(r.incident_ts / 1e9);
+
+  const [spanRes, logRes, metricRes, anomRes, changeRes] = await Promise.all([
     api(`/v1/query/spans?service=${encodeURIComponent(svc)}&from=${fromNs}&to=${toNs}&limit=50`),
     api(`/v1/query/logs?service=${encodeURIComponent(svc)}&from=${fromNs}&to=${toNs}&limit=100`),
     api(`/v1/query/metrics?service=${encodeURIComponent(svc)}&from=${fromNs}&to=${toNs}&limit=200`),
+    api(`/v1/query/anomalies?entity=${encodeURIComponent(svc)}&limit=100`),
+    api(`/v1/changes?entity=${encodeURIComponent(svc)}&from=${fromSecs}&to=${toSecs}&limit=20`),
   ]);
 
   const el = document.getElementById('rca-evidence');
@@ -3264,7 +3562,15 @@ async function loadRCAEvidence(r) {
   const spans   = spanRes?.data   || [];
   const logs    = logRes?.data    || [];
   const metrics = metricRes?.data || [];
+  // Anomalies filtered to incident window. detected_at is inconsistently stored as
+  // Unix seconds (most detectors) or Unix nanoseconds (correlator, missing_svc).
+  // Normalise before comparing against fromNs/toNs (both nanoseconds).
+  const anomalies = (anomRes?.data || []).filter(a => {
+    const ns = a.detected_at < 1e13 ? a.detected_at * 1e9 : a.detected_at;
+    return ns >= fromNs && ns <= toNs + 5*60*1e9;
+  });
 
+  const changes = changeRes?.data || [];
   const errSpans = spans.filter(s => s.status_code === 2);
   const notableLog = logs.filter(l => ['ERROR','FATAL','WARN','WARNING'].includes((l.severity||'').toUpperCase()));
 
@@ -3326,29 +3632,92 @@ async function loadRCAEvidence(r) {
     </table>`;
   }
 
+  function evAnomaliesHTML() {
+    if (!anomalies.length) return `<div style="padding:12px;color:var(--muted);font-size:12px">No anomalies in incident window.</div>`;
+    return `<table style="width:100%;border-collapse:collapse;font-size:12px">
+      ${anomalies.map(a => `
+        <tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+          <td style="padding:5px 10px;color:var(--muted);font-family:monospace;font-size:10px;white-space:nowrap">${fmtTime(a.detected_at)}</td>
+          <td style="padding:5px 10px;white-space:nowrap"><span class="badge ${SIGNAL_BADGE[a.signal_type]||'b-warn'}" style="font-size:10px">${SIGNAL_LABELS[a.signal_type]||a.signal_type}</span></td>
+          <td style="padding:5px 10px;font-size:11px;color:var(--muted);max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(a.description||'')}">${esc(a.description||a.metric_name||'—')}</td>
+          <td style="padding:5px 10px;font-family:monospace;font-size:11px;text-align:right">${a.value != null ? fmtVal(a.value) : '—'}</td>
+        </tr>`).join('')}
+    </table>`;
+  }
+
+  function evChangesHTML() {
+    if (!changes.length) return `<div style="padding:16px;color:var(--muted);font-size:12px">No changes recorded in the 2h before this incident.<br><br>
+      <span style="opacity:.7">To ingest change records, POST to <code>/v1/changes</code> from your CI/CD pipeline:<br>
+      <code>curl -X POST http://&lt;host&gt;:8080/v1/changes -H 'Content-Type: application/json' \\<br>
+      &nbsp;&nbsp;-d '{"entity_id":"${esc(svc)}","description":"deploy v1.2.3","author":"ci-bot","change_type":"deploy"}'</code></span>
+    </div>`;
+    const typeColor = { deploy: '#22c55e', rollback: '#ef4444', config: '#f97316', manual: '#a78bfa' };
+    return `<table style="width:100%;border-collapse:collapse;font-size:12px">
+      ${changes.map(c => {
+        const ageSecs = toSecs - c.timestamp;
+        const ageStr = ageSecs < 60 ? `${ageSecs}s` : ageSecs < 3600 ? `${Math.floor(ageSecs/60)}m` : `${Math.floor(ageSecs/3600)}h${Math.floor((ageSecs%3600)/60)}m`;
+        const col = typeColor[c.change_type] || '#a78bfa';
+        return `<tr style="border-bottom:1px solid rgba(255,255,255,.04)">
+          <td style="padding:6px 10px;white-space:nowrap">
+            <span style="display:inline-block;background:${col}22;color:${col};border:1px solid ${col}55;border-radius:4px;font-size:10px;font-weight:700;padding:1px 6px">${esc(c.change_type)}</span>
+          </td>
+          <td style="padding:6px 10px;font-size:11px;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.description)}">${esc(c.description)}</td>
+          <td style="padding:6px 10px;color:var(--muted);font-size:11px;white-space:nowrap">${esc(c.author||'—')}</td>
+          <td style="padding:6px 10px;color:var(--muted);font-family:monospace;font-size:10px;white-space:nowrap">${ageStr} before</td>
+          ${c.link ? `<td style="padding:6px 10px"><a href="${esc(c.link)}" target="_blank" style="color:var(--accent);font-size:10px">link ↗</a></td>` : '<td></td>'}
+        </tr>`;
+      }).join('')}
+    </table>`;
+  }
+
+  const isCorrelated = _anomalyByEntity[svc]?.signal === 'correlated_incident';
+  const defaultTab = changes.length                                ? 'changes'   :
+                     (isCorrelated && anomalies.length)            ? 'anomalies' :
+                     (!spans.length && anomalies.length)           ? 'anomalies' :
+                     (!spans.length && metrics.length)             ? 'metrics'   : 'spans';
+
+  const anomTabStyle = anomalies.length ? 'color:var(--red);font-weight:700' : '';
+  const chgTabStyle  = changes.length   ? 'color:#f97316;font-weight:700'    : '';
+
   el.innerHTML = `
+    ${changes.length ? `
+    <div style="background:#f9731615;border:1px solid #f9731640;border-radius:8px;padding:10px 14px;margin-bottom:10px;display:flex;align-items:center;gap:10px">
+      <span style="font-size:16px">🚀</span>
+      <div>
+        <span style="font-size:12px;font-weight:700;color:#fb923c">${changes.length} change${changes.length>1?'s':''} in the 2h before this incident</span>
+        <span style="font-size:11px;color:var(--muted);margin-left:8px">${changes.map(c=>esc(c.description)).slice(0,2).join(' · ')}${changes.length>2?' · …':''}</span>
+      </div>
+    </div>` : ''}
     <div class="svc-signals-tabs" style="margin-bottom:0">
-      <button class="svc-sig-tab active" onclick="switchRcaEvTab('spans',this)">
+      <button class="svc-sig-tab${defaultTab==='changes'?' active':''}" onclick="switchRcaEvTab('changes',this)" style="${chgTabStyle}">
+        Changes <span style="opacity:.7">${changes.length}</span>
+      </button>
+      <button class="svc-sig-tab${defaultTab==='spans'?' active':''}" onclick="switchRcaEvTab('spans',this)">
         Spans <span style="opacity:.7">${spans.length}${errSpans.length ? ' · ' + errSpans.length + ' err' : ''}</span>
       </button>
       <button class="svc-sig-tab" onclick="switchRcaEvTab('logs',this)">
         Logs <span style="opacity:.7">${notableLog.length ? notableLog.length + ' notable' : logs.length}</span>
       </button>
-      <button class="svc-sig-tab" onclick="switchRcaEvTab('metrics',this)">
+      <button class="svc-sig-tab${defaultTab==='metrics'?' active':''}" onclick="switchRcaEvTab('metrics',this)">
         Metrics <span style="opacity:.7">${Object.keys(Object.fromEntries(metrics.map(m=>[m.name,1]))).length} series</span>
+      </button>
+      <button class="svc-sig-tab${defaultTab==='anomalies'?' active':''}" onclick="switchRcaEvTab('anomalies',this)" style="${anomTabStyle}">
+        Anomalies <span style="opacity:.7">${anomalies.length}</span>
       </button>
     </div>
     <div style="background:var(--surface);border:1px solid var(--border);border-top:none;border-radius:0 0 8px 8px;max-height:260px;overflow-y:auto">
-      <div id="rca-ev-spans">${evSpansHTML()}</div>
-      <div id="rca-ev-logs"   style="display:none">${evLogsHTML()}</div>
-      <div id="rca-ev-metrics" style="display:none">${evMetricsHTML()}</div>
+      <div id="rca-ev-changes"   style="${defaultTab!=='changes'?'display:none':''}">${evChangesHTML()}</div>
+      <div id="rca-ev-spans"     style="${defaultTab!=='spans'?'display:none':''}">${evSpansHTML()}</div>
+      <div id="rca-ev-logs"      style="display:none">${evLogsHTML()}</div>
+      <div id="rca-ev-metrics"   style="display:none">${evMetricsHTML()}</div>
+      <div id="rca-ev-anomalies" style="${defaultTab!=='anomalies'?'display:none':''}">${evAnomaliesHTML()}</div>
     </div>`;
 }
 
 function switchRcaEvTab(name, btn) {
   btn.closest('.svc-signals-tabs').querySelectorAll('.svc-sig-tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
-  ['spans','logs','metrics'].forEach(n => {
+  ['changes','spans','logs','metrics','anomalies'].forEach(n => {
     const el = document.getElementById('rca-ev-' + n);
     if (el) el.style.display = n === name ? '' : 'none';
   });
@@ -4289,6 +4658,7 @@ async function loadCustomSignalsForSpan(spanId) {
 // ── SCENARIOS ──────────────────────────────────────────────────────────────
 let _scPollTimer = null;
 let _scCards = [];   // cached scenario metadata
+let _lastScenarioMeta = null; // scenario that most recently ran
 
 async function loadScenarios() {
   const res = await api('/v1/scenarios');
@@ -4335,12 +4705,12 @@ function renderScenarioCards(scenarios, status) {
         </div>
         <div style="display:flex;gap:6px;align-items:center">
           <label style="font-size:11px;color:var(--muted)">Anomaly</label>
-          <input id="sc-anomaly-${s.name}" type="number" min="10" max="300" step="10" value="90"
+          <input id="sc-anomaly-${s.name}" type="number" min="10" max="300" step="10" value="60"
             style="width:52px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--fg);padding:2px 6px;font-size:11px">s
         </div>
         <div style="display:flex;gap:6px;align-items:center">
           <label style="font-size:11px;color:var(--muted)">Cooldown</label>
-          <input id="sc-cooldown-${s.name}" type="number" min="5" max="120" step="5" value="20"
+          <input id="sc-cooldown-${s.name}" type="number" min="5" max="120" step="5" value="10"
             style="width:52px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--fg);padding:2px 6px;font-size:11px">s
         </div>
         <button onclick="runScenario('${s.name}')"
@@ -4364,6 +4734,8 @@ async function runScenario(name) {
     body: JSON.stringify({ scenario: name, rps, warmup_s: warmup, anomaly_s: anomaly, cooldown_s: cooldown })
   });
   if (!res) { alert('Failed to start scenario — check server logs.'); return; }
+  _lastScenarioMeta = _scCards.find(s => s.name === name) || null;
+  document.getElementById('sc-result-bar').style.display = 'none'; // clear old result
   startScenarioPoll();
 }
 
@@ -4398,6 +4770,48 @@ function startScenarioPoll() {
 
 function stopScenarioPoll() {
   if (_scPollTimer) { clearInterval(_scPollTimer); _scPollTimer = null; }
+  if (_lastScenarioMeta) showScenarioResult(_lastScenarioMeta);
+}
+
+async function showScenarioResult(meta) {
+  const bar = document.getElementById('sc-result-bar');
+  if (!bar) return;
+  const color = meta.color || '#22c55e';
+  bar.style.background = color + '11';
+  bar.style.border = '1px solid ' + color + '44';
+  bar.style.color = 'var(--fg)';
+
+  // Query anomalies for the affected service
+  const res = await api(`/v1/query/anomalies?entity=${encodeURIComponent(meta.affected_service)}&limit=50`);
+  const rows = res?.data || [];
+
+  // Count signals fired in the last 10 minutes
+  const cutoffNs = (Date.now() - 10 * 60 * 1000) * 1e6;
+  const recent = rows.filter(r => r.detected_at >= cutoffNs && r.signal_type !== 'missing_service');
+  const sigCounts = {};
+  recent.forEach(r => { sigCounts[r.signal_type] = (sigCounts[r.signal_type] || 0) + 1; });
+
+  const expectedFired = sigCounts[meta.signal] > 0;
+  const sigBadges = Object.entries(sigCounts).map(([sig, cnt]) => {
+    const isExpected = sig === meta.signal;
+    const bg = isExpected ? color : '#6b728044';
+    const fg = isExpected ? color : '#9ca3af';
+    return `<span style="background:${bg}22;color:${fg};border:1px solid ${bg};border-radius:4px;padding:1px 7px;font-size:11px;font-weight:600">${sig} ×${cnt}</span>`;
+  }).join(' ');
+
+  const statusIcon = expectedFired ? '✓' : '⚠';
+  const statusText = expectedFired
+    ? `<strong style="color:${color}">${statusIcon} Detected:</strong> ${sigBadges} on <strong>${meta.affected_service}</strong>`
+    : `<strong style="color:#f59e0b">${statusIcon} Expected <code>${meta.signal}</code> on ${meta.affected_service} — check Anomalies tab or wait for next detector pass</strong>`;
+
+  bar.innerHTML = `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <span style="font-weight:700;color:${color}">${meta.label}</span>
+    <span style="color:var(--muted);font-size:11px">completed ·</span>
+    ${statusText}
+    <button onclick="document.getElementById('sc-result-bar').style.display='none'"
+      style="margin-left:auto;background:none;border:none;color:var(--muted);cursor:pointer;font-size:16px;line-height:1">×</button>
+  </div>`;
+  bar.style.display = 'block';
 }
 
 function updateScenarioStatusBar(status) {

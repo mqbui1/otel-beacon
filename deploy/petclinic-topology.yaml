@@ -1,94 +1,94 @@
-# PetClinic topology — maps simulator roles to actual petclinic service names.
-# environment matches the petclinic k3d deployment so simulated traces
-# appear alongside real traffic in the same environment filter.
+# Astronomy Shop topology — maps simulator roles to actual astronomy-shop service names.
+# environment matches the demo deployment so simulated traces appear alongside
+# real traffic in the same environment filter.
 
-environment: petclinic
+environment: astronomyshop
 
 services:
   frontend:
-    name: api-gateway
-    language: java
-    version: "3.3.0"
-    hosts: [api-gateway-1]
+    name: frontend-proxy
+    language: go
+    version: "1.0.0"
+    hosts: [frontend-proxy-1]
 
   api-gateway:
-    name: api-gateway
-    language: java
-    version: "3.3.0"
-    hosts: [api-gateway-1]
+    name: frontend-proxy
+    language: go
+    version: "1.0.0"
+    hosts: [frontend-proxy-1]
 
   order-service:
-    name: visits-service
-    language: java
-    version: "3.3.0"
-    hosts: [visits-service-1]
+    name: checkout
+    language: go
+    version: "1.0.0"
+    hosts: [checkout-1]
 
   user-service:
-    name: customers-service
-    language: java
-    version: "3.3.0"
-    hosts: [customers-service-1]
+    name: recommendation
+    language: python
+    version: "1.0.0"
+    hosts: [recommendation-1]
 
   product-service:
-    name: vets-service
-    language: java
-    version: "3.3.0"
-    hosts: [vets-service-1]
+    name: product-catalog
+    language: go
+    version: "1.0.0"
+    hosts: [product-catalog-1]
 
   payment-service:
-    name: visits-service
-    language: java
-    version: "3.3.0"
-    hosts: [visits-service-1]
+    name: payment
+    language: nodejs
+    version: "1.0.0"
+    hosts: [payment-1]
 
   postgres:
-    name: h2
-    language: h2
-    version: "2.2.224"
-    hosts: [petclinic-db]
+    name: postgresql
+    language: sql
+    version: "14.0"
+    hosts: [postgresql-1]
 
   redis:
-    name: caffeine-cache
-    language: java
-    version: "3.1.0"
-    hosts: [in-process-cache]
+    name: valkey-cart
+    language: redis
+    version: "7.2"
+    hosts: [valkey-cart-1]
 
   stripe-api:
-    name: external-api
-    language: java
+    name: accounting
+    language: go
     version: "1.0.0"
-    hosts: [external-api-1]
+    hosts: [accounting-1]
 
 scenario_overrides:
   db_slowdown:
-    root_endpoint: "GET /api/customer/owners"
-    slow_query: "SELECT * FROM owners WHERE last_name LIKE ? ORDER BY last_name"
-    slow_table: "owners"
+    root_endpoint: "POST /api/checkout"
+    slow_query: "SELECT * FROM users WHERE session_id = ? ORDER BY created_at"
+    slow_table: "users"
 
   cache_miss_storm:
-    root_endpoint: "GET /api/vet/vets"
+    root_endpoint: "GET /api/products"
 
   payment_timeout:
     external_endpoint: "https://api.openai.com/v1/chat/completions"
     affected_region: "us-east-1"
 
   error_cascade:
-    root_endpoint: "GET /api/visit/owners/*/pets/*/visits"
+    root_endpoint: "GET /api/recommendations"
 
   latency_spike:
-    root_endpoint: "POST /api/visit/owners/*/pets/*/visits"
+    root_endpoint: "POST /api/checkout"
 
   oom_crash:
-    root_endpoint: "GET /api/vet/vets"
+    root_endpoint: "GET /api/products"
 
   cascading_failure:
-    root_endpoint: "GET /api/customer/owners"
+    root_endpoint: "POST /api/checkout"
 
   new_error_sig:
-    root_endpoint: "PUT /api/customer/owners/:id"
+    root_endpoint: "GET /api/recommendations"
 
   span_drop:
-    root_endpoint: "POST /api/visit/owners/*/pets/*/visits"
+    root_endpoint: "POST /api/checkout"
 
   kill_service:
-    root_endpoint: "POST /api/visit/owners/*/pets/*/visits"
+    root_endpoint: "POST /api/checkout"

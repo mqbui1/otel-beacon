@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -20,11 +21,6 @@ const (
 // span attributes (db.name, peer.service, etc.) and get registered as
 // entities, but going silent is expected — not an incident.
 var missingSvcDenylist = map[string]bool{
-	// Petclinic embedded / infra
-	"h2":               true,
-	"caffeine-cache":   true,
-	"config-server":    true,
-	"discovery-server": true,
 	// Generic infra that commonly appears as span peers
 	"eureka":           true,
 	"zipkin":           true,
@@ -33,6 +29,34 @@ var missingSvcDenylist = map[string]bool{
 	"grafana":          true,
 	"loki":             true,
 	"otel-collector":   true,
+	"otelcol-contrib":  true,
+	// Astronomy shop infra — passive services, not expected to emit root spans
+	"postgresql":       true,
+	"valkey-cart":      true,
+	"kafka":            true,
+	"flagd":            true,
+	// k3d / Kubernetes system components — one-shot jobs or cluster infra,
+	// going silent is expected and should never trigger incidents.
+	"helm-install-traefik":     true,
+	"helm-install-traefik-crd": true,
+	"traefik":                  true,
+	"traefik-kube-system":      true,
+	"coredns":                  true,
+	"metrics-server":           true,
+	"local-path-provisioner":   true,
+	"astronomy-shop":           true, // helm release meta-entity
+	"load-generator":           true, // synthetic load gen, not a real service
+	// Transient scenario-injected services — appear only during anomaly phase,
+	// going silent after cooldown is expected and should not trigger incidents.
+	"audit-service":    true, // new_call_path: injected new dependency
+	"accounting":       true, // payment_timeout: external payment via topology
+	// Astronomy shop simulator services — only exist while the simulator runs.
+	// Going silent after a scenario ends is expected and should not trigger incidents.
+	"checkout":         true,
+	"recommendation":   true,
+	"product-catalog":  true,
+	"payment":          true,
+	"frontend-proxy":   true,
 }
 
 // StartMissingSvcChecker periodically checks whether any known service entity
@@ -71,7 +95,11 @@ func runMissingSvcCheck(ctx context.Context, store *storage.Storage, logger *zap
 		if e.LastSeenNs == 0 {
 			continue
 		}
-		if missingSvcDenylist[e.EntityID] {
+		if missingSvcDenylist[e.EntityID] ||
+			strings.HasPrefix(e.EntityID, "svclb-") ||
+			strings.HasPrefix(e.EntityID, "kube-") ||
+			strings.HasPrefix(e.EntityID, "helm-install-") {
+			_ = store.DeleteMissingServiceAnomaly(ctx, e.EntityID)
 			continue
 		}
 		if e.LastSeenNs < cutoff {

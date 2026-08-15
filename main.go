@@ -71,6 +71,9 @@ func main() {
 	server.StartEvalWorker(evalCtx, store, logger)
 	server.StartSessionEvalWorker(evalCtx, store, logger)
 	server.StartMissingSvcChecker(evalCtx, store, logger)
+	server.StartCorrelator(evalCtx, store, logger)
+	server.StartGrouper(evalCtx, store, logger)
+	server.StartK8sScraper(evalCtx, store, logger)
 	expWorker := server.NewExperimentWorker()
 	server.StartExperimentWorker(evalCtx, expWorker, store, logger)
 

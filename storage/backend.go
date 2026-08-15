@@ -92,6 +92,40 @@ type EntityRow struct {
 	LastSeenNs  int64  `json:"last_seen_ns"`
 }
 
+// ChangeEventRow represents a deployment or configuration change linked to a service entity.
+type ChangeEventRow struct {
+	ID          int64  `json:"id"`
+	EntityID    string `json:"entity_id"`
+	ChangeType  string `json:"change_type"`  // "deploy"|"config"|"rollback"|"manual"
+	Description string `json:"description"`
+	Author      string `json:"author,omitempty"`
+	Link        string `json:"link,omitempty"` // PR/commit URL
+	Timestamp   int64  `json:"timestamp"`      // Unix seconds
+}
+
+// IncidentGroupRow represents a topology-connected group of services experiencing simultaneous incidents.
+type IncidentGroupRow struct {
+	GroupID          string `json:"group_id"`          // deterministic: root_entity-10min_bucket
+	RootEntityID     string `json:"root_entity_id"`    // inferred upstream root cause
+	AffectedEntities string `json:"affected_entities"` // JSON array: ["svc-a","svc-b"]
+	Severity         string `json:"severity"`          // "critical" | "warning"
+	Status           string `json:"status"`            // "active" | "resolved"
+	SignalTypes      string `json:"signal_types"`      // JSON array: ["span_error_rate","trace_drift"]
+	Description      string `json:"description"`
+	FirstSeenNs      int64  `json:"first_seen_ns"`
+	LastSeenNs       int64  `json:"last_seen_ns"`
+	ResolvedAt       int64  `json:"resolved_at,omitempty"`
+}
+
+// EntitySnapshotRow captures entity health at a specific moment in time.
+type EntitySnapshotRow struct {
+	ID         int64  `json:"id"`
+	EntityID   string `json:"entity_id"`
+	SnapshotAt int64  `json:"snapshot_at"` // Unix nanoseconds
+	HealthJSON string `json:"health_json"` // JSON of EntityHealth
+	GroupID    string `json:"group_id,omitempty"`
+}
+
 // TopologyEdge represents a directional call relationship between two services.
 type TopologyEdge struct {
 	SourceService string  `json:"source_service"`
@@ -100,6 +134,7 @@ type TopologyEdge struct {
 	ErrorCount    int64   `json:"error_count"`
 	AvgDurationMs float64 `json:"avg_duration_ms"`
 	UpdatedAt     int64   `json:"updated_at"`
+	FirstSeenAt   int64   `json:"first_seen_at,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +206,23 @@ type Backend interface {
 	QueryEntities(ctx context.Context, entityType, env string) ([]EntityRow, error)
 	QueryEnvironments(ctx context.Context) ([]string, error)
 	QueryTopology(ctx context.Context) ([]TopologyEdge, error)
+	// QueryNewTopologyEdges returns edges whose first_seen_at is within the last sinceSeconds.
+	QueryNewTopologyEdges(ctx context.Context, sinceSeconds int64) ([]TopologyEdge, error)
+	// QueryRecentAnomaliesByEntity returns all anomalies in the last windowSeconds grouped by entity.
+	QueryRecentAnomaliesByEntity(ctx context.Context, windowSeconds int64) (map[string][]AnomalyRow, error)
+
+	// Change records
+	InsertChangeEvent(ctx context.Context, e ChangeEventRow) (int64, error)
+	QueryChangeEvents(ctx context.Context, entityID string, fromSecs, toSecs int64, limit int) ([]ChangeEventRow, error)
+
+	// Incident groups (topology-aware signal grouping)
+	UpsertIncidentGroup(ctx context.Context, g IncidentGroupRow) error
+	QueryIncidentGroups(ctx context.Context, status string, limit int) ([]IncidentGroupRow, error)
+	ResolveStaleIncidentGroups(ctx context.Context, staleSecs int64) error
+
+	// Entity snapshots (temporal health capture at incident time)
+	SaveEntitySnapshot(ctx context.Context, s EntitySnapshotRow) error
+	QueryEntitySnapshot(ctx context.Context, entityID string, nearNs int64) (*EntitySnapshotRow, error)
 
 	// DeleteBefore removes rows older than cutoffUnix (Unix seconds).
 	// ClickHouse implements this as a no-op since it uses table-level TTL.

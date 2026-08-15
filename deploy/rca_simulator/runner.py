@@ -78,7 +78,6 @@ class ScenarioRunner:
                     self.scenario.run_normal(req, parent_ctx=None)
                 req_count += 1
 
-                # Rate limiting: sleep for remaining interval
                 elapsed_req = time.monotonic() - t0
                 sleep_for = interval - elapsed_req
                 if sleep_for > 0:
@@ -87,7 +86,6 @@ class ScenarioRunner:
             except Exception as e:
                 logger.warning("Request failed: %s", e)
 
-            # Progress indicator every 10 requests
             if req_count % 10 == 0:
                 pct = min(100, int((time.monotonic() - start) / total * 100))
                 print(f"  [{pct:3d}%] Phase={current_phase:<8s}  requests={req_count}", flush=True)

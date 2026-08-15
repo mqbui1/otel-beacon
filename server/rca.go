@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,6 +62,8 @@ type RCAResult struct {
 	CandidateCauses    []CauseCandidate              `json:"candidate_causes"`
 	ErrorSignatures    []storage.ErrorSignatureRow   `json:"error_signatures,omitempty"`
 	TraceFingerprints  []storage.TraceFingerprintRow `json:"trace_fingerprints,omitempty"`
+	ActiveAnomalies    []storage.AnomalyRow          `json:"active_anomalies,omitempty"`
+	RecentChanges      []storage.ChangeEventRow      `json:"recent_changes,omitempty"` // deployments / config changes near the incident
 	Narrative          string                        `json:"narrative,omitempty"`
 }
 
@@ -96,35 +99,73 @@ func (s *queryServer) rca(w http.ResponseWriter, r *http.Request) {
 	}
 
 	withAI := r.URL.Query().Get("ai") == "true"
-	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	windowNs := int64(windowSecs) * 1_000_000_000
 	fromNs := incidentTs - windowNs
 	toNs := incidentTs
 
-	// Load all service entities once — avoids repeated DB calls in co-location checks
-	allEntities, _ := s.store.QueryEntities(ctx, "service", "")
+	// Load entities + topology + recent anomaly map in parallel — all needed before neighbor queries.
+	var allEntities []storage.EntityRow
+	var edges []storage.TopologyEdge
+	var activeAnomalyMap map[string][]storage.AnomalyRow
+	var prefetchWg sync.WaitGroup
+	prefetchWg.Add(3)
+	go func() { defer prefetchWg.Done(); allEntities, _ = s.store.QueryEntities(ctx, "service", "") }()
+	go func() { defer prefetchWg.Done(); edges, _ = s.store.QueryTopology(ctx) }()
+	go func() {
+		defer prefetchWg.Done()
+		activeAnomalyMap, _ = s.store.QueryRecentAnomaliesByEntity(ctx, int64(windowSecs)+60)
+	}()
+	prefetchWg.Wait()
+
 	attrsMap := buildEntityAttrsMap(allEntities)
 
 	// k8s filter attrs for the focal entity (pod + deployment only — no node/namespace)
 	k8sFilter := filterAttrs(attrsMap[entityID])
 
-	// Focal entity: incident window + baseline (previous window)
-	health := s.entityHealth(ctx, entityID, k8sFilter, fromNs, toNs)
-	baseline := s.entityHealth(ctx, entityID, k8sFilter, fromNs-windowNs, fromNs)
+	// Focal entity: incident window + baseline — run in parallel
+	var health, baseline EntityHealth
+	var focalWg sync.WaitGroup
+	focalWg.Add(2)
+	go func() { defer focalWg.Done(); health = s.entityHealth(ctx, entityID, k8sFilter, fromNs, toNs) }()
+	go func() { defer focalWg.Done(); baseline = s.entityHealth(ctx, entityID, k8sFilter, fromNs-windowNs, fromNs) }()
 
-	// Topology
-	edges, _ := s.store.QueryTopology(ctx)
 	upstreamIDs, downstreamIDs := topologyNeighbors(entityID, edges)
+	// Cap neighbor counts to bound worst-case query fan-out
+	if len(upstreamIDs) > 6 {
+		upstreamIDs = upstreamIDs[:6]
+	}
+	if len(downstreamIDs) > 6 {
+		downstreamIDs = downstreamIDs[:6]
+	}
 
-	// Co-located services (same k8s.node.name as focal entity)
+	// Co-located services — cap at 4
 	nodeName := attrsMap[entityID]["k8s.node.name"]
 	coLocatedIDs := coLocatedServices(entityID, nodeName, attrsMap)
+	if len(coLocatedIDs) > 4 {
+		coLocatedIDs = coLocatedIDs[:4]
+	}
 
-	// Neighbor health with pre-window for lag detection
-	upstream := s.neighborHealthList(ctx, upstreamIDs, "upstream", attrsMap, fromNs, toNs, windowNs)
-	downstream := s.neighborHealthList(ctx, downstreamIDs, "downstream", attrsMap, fromNs, toNs, windowNs)
-	coLocated := s.neighborHealthList(ctx, coLocatedIDs, "co_located", attrsMap, fromNs, toNs, windowNs)
+	focalWg.Wait()
+
+	// Neighbor health — run all three neighbor sets in parallel to reduce total latency.
+	var upstream, downstream, coLocated []NeighborHealth
+	var neighborWg sync.WaitGroup
+	neighborWg.Add(3)
+	go func() {
+		defer neighborWg.Done()
+		upstream = s.neighborHealthList(ctx, upstreamIDs, "upstream", attrsMap, fromNs, toNs, windowNs, activeAnomalyMap)
+	}()
+	go func() {
+		defer neighborWg.Done()
+		downstream = s.neighborHealthList(ctx, downstreamIDs, "downstream", attrsMap, fromNs, toNs, windowNs, activeAnomalyMap)
+	}()
+	go func() {
+		defer neighborWg.Done()
+		coLocated = s.neighborHealthListFast(ctx, coLocatedIDs, "co_located", attrsMap, fromNs, toNs, activeAnomalyMap)
+	}()
+	neighborWg.Wait()
 
 	candidates := rankCauses(health, baseline, upstream, downstream, coLocated)
 
@@ -183,7 +224,59 @@ func (s *queryServer) rca(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Callgraph drift anomalies: new service-to-service edges detected by the topology worker.
+	// Surfaces as a dedicated candidate when trace fingerprints aren't available.
+	for _, a := range anomalies {
+		if a.SignalType != "callgraph_drift" {
+			continue
+		}
+		candidates = append(candidates, CauseCandidate{
+			EntityID:   entityID,
+			CauseType:  "trace_drift",
+			Confidence: 0.80,
+			Evidence:   a.Description,
+		})
+	}
+
+	// Recent changes: deployments / config changes in the 2h window before the incident.
+	// A change immediately before an incident is the most common real-world root cause.
+	const changeWindowSecs = int64(2 * 60 * 60) // 2 hours
+	incidentSecs := incidentTs / 1_000_000_000
+	recentChanges, _ := s.store.QueryChangeEvents(ctx, entityID, incidentSecs-changeWindowSecs, incidentSecs, 20)
+	for _, ch := range recentChanges {
+		ageSecs := incidentSecs - ch.Timestamp
+		// Confidence decays with age: 0.9 at t=0, ~0.6 at t=2h
+		conf := math.Max(0.55, 0.9-float64(ageSecs)/float64(changeWindowSecs)*0.35)
+		evidence := fmt.Sprintf("%s by %s (%s ago)", ch.Description, ch.Author, fmtAgeSecs(ageSecs))
+		if ch.Link != "" {
+			evidence += " — " + ch.Link
+		}
+		candidates = append(candidates, CauseCandidate{
+			EntityID:   entityID,
+			CauseType:  "recent_change",
+			Confidence: conf,
+			Evidence:   evidence,
+		})
+	}
+
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Confidence > candidates[j].Confidence })
+
+	// Deduplicate: keep only the highest-confidence candidate per (entity, type) pair,
+	// then filter noise below 0.35 confidence.
+	type dedupKey struct{ entity, causeType string }
+	seen := make(map[dedupKey]bool)
+	filtered := candidates[:0]
+	for _, c := range candidates {
+		k := dedupKey{c.EntityID, c.CauseType}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		if c.Confidence >= 0.35 {
+			filtered = append(filtered, c)
+		}
+	}
+	candidates = filtered
 
 	result := RCAResult{
 		Entity:             entityID,
@@ -198,15 +291,17 @@ func (s *queryServer) rca(w http.ResponseWriter, r *http.Request) {
 		CandidateCauses:    candidates,
 		ErrorSignatures:    errorSigs,
 		TraceFingerprints:  traceFingerprints,
+		ActiveAnomalies:    anomalies,
+		RecentChanges:      recentChanges,
 	}
 
+	// Always generate a heuristic narrative; upgrade to Bedrock AI if ?ai=true.
+	result.Narrative = narrativeHeuristic(result)
 	if withAI {
-		narrative, err := generateNarrative(ctx, result)
-		if err != nil {
-			s.logger.Warn("bedrock narrative failed", zap.Error(err))
-			result.Narrative = "[AI summary unavailable: " + err.Error() + "]"
+		if aiNarrative, err := generateNarrative(ctx, result); err != nil {
+			s.logger.Warn("bedrock narrative failed, using heuristic", zap.Error(err))
 		} else {
-			result.Narrative = narrative
+			result.Narrative = aiNarrative
 		}
 	}
 
@@ -217,6 +312,10 @@ func (s *queryServer) rca(w http.ResponseWriter, r *http.Request) {
 // ─── Health computation ───────────────────────────────────────────────────────
 
 func (s *queryServer) entityHealth(ctx context.Context, entityID string, k8sAttrs map[string]string, fromNs, toNs int64) EntityHealth {
+	return s.entityHealthN(ctx, entityID, k8sAttrs, fromNs, toNs, 100)
+}
+
+func (s *queryServer) entityHealthN(ctx context.Context, entityID string, k8sAttrs map[string]string, fromNs, toNs int64, spanLimit int) EntityHealth {
 	h := EntityHealth{EntityID: entityID}
 
 	var (
@@ -228,7 +327,7 @@ func (s *queryServer) entityHealth(ctx context.Context, entityID string, k8sAttr
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		spans, _ = s.store.QuerySpans(ctx, storage.SpanQuery{Service: entityID, From: fromNs, To: toNs, Limit: 500})
+		spans, _ = s.store.QuerySpans(ctx, storage.SpanQuery{Service: entityID, From: fromNs, To: toNs, Limit: spanLimit})
 	}()
 	go func() {
 		defer wg.Done()
@@ -264,17 +363,18 @@ func (s *queryServer) entityHealth(ctx context.Context, entityID string, k8sAttr
 			h.LogWarns++
 		}
 	}
+	if len(metrics) > 0 {
+		h.HasData = true
+	}
 	for _, m := range metrics {
 		switch m.Name {
 		case "container.cpu.usage":
 			if m.Value > h.CpuUsage {
 				h.CpuUsage = m.Value
-				h.HasData = true
 			}
 		case "container.memory.rss":
 			if int64(m.Value) > h.MemRssBytes {
 				h.MemRssBytes = int64(m.Value)
-				h.HasData = true
 			}
 		}
 	}
@@ -287,6 +387,7 @@ func (s *queryServer) neighborHealthList(
 	relation string,
 	attrsMap map[string]map[string]string,
 	fromNs, toNs, windowNs int64,
+	activeAnomalies map[string][]storage.AnomalyRow,
 ) []NeighborHealth {
 	out := make([]NeighborHealth, len(ids))
 	var wg sync.WaitGroup
@@ -295,18 +396,53 @@ func (s *queryServer) neighborHealthList(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// Fast path: neighbor has no active anomalies → skip all DB queries.
+			if _, hasAnomalies := activeAnomalies[id]; !hasAnomalies {
+				out[i] = NeighborHealth{EntityID: id, Relation: relation, Health: EntityHealth{EntityID: id}}
+				return
+			}
 			k8s := filterAttrs(attrsMap[id])
-			h := s.entityHealth(ctx, id, k8s, fromNs, toNs)
-			// Lag: check the first half of the incident window — if the neighbor
-			// was already degraded then, it likely caused the focal entity's issue.
-			midNs := fromNs + windowNs/2
-			early := s.entityHealth(ctx, id, k8s, fromNs, midNs)
+			h := s.entityHealthN(ctx, id, k8s, fromNs, toNs, 30)
+			// Lag detection: only pay for a second query when the neighbor is actually degraded.
 			lag := 0.0
-			if early.HasData && (early.ErrorRate > 0.1 || (early.P95Ms > 0 && h.P95Ms > 0 && early.P95Ms > h.P95Ms*1.5)) {
-				// Estimate lag as negative seconds — how far before the window end it degraded
-				lag = -float64(windowNs/2) / 1_000_000_000
+			if h.HasData && (h.ErrorRate > 0.05 || h.P95Ms > 500) {
+				midNs := fromNs + windowNs/2
+				early := s.entityHealthN(ctx, id, k8s, fromNs, midNs, 20)
+				if early.HasData && (early.ErrorRate > 0.1 || (early.P95Ms > 0 && h.P95Ms > 0 && early.P95Ms > h.P95Ms*1.5)) {
+					lag = -float64(windowNs/2) / 1_000_000_000
+				}
 			}
 			out[i] = NeighborHealth{EntityID: id, Relation: relation, Health: h, LagSeconds: lag}
+		}()
+	}
+	wg.Wait()
+	return out
+}
+
+// neighborHealthListFast is like neighborHealthList but skips lag-detection.
+// Used for co-located services where lag timing is less meaningful.
+func (s *queryServer) neighborHealthListFast(
+	ctx context.Context,
+	ids []string,
+	relation string,
+	attrsMap map[string]map[string]string,
+	fromNs, toNs int64,
+	activeAnomalies map[string][]storage.AnomalyRow,
+) []NeighborHealth {
+	out := make([]NeighborHealth, len(ids))
+	var wg sync.WaitGroup
+	for i, id := range ids {
+		i, id := i, id
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, hasAnomalies := activeAnomalies[id]; !hasAnomalies {
+				out[i] = NeighborHealth{EntityID: id, Relation: relation, Health: EntityHealth{EntityID: id}}
+				return
+			}
+			k8s := filterAttrs(attrsMap[id])
+			h := s.entityHealthN(ctx, id, k8s, fromNs, toNs, 20)
+			out[i] = NeighborHealth{EntityID: id, Relation: relation, Health: h}
 		}()
 	}
 	wg.Wait()
@@ -510,6 +646,116 @@ func edgeCount(edgeListJSON string) int {
 		return 0
 	}
 	return len(edges)
+}
+
+func fmtAgeSecs(secs int64) string {
+	if secs < 60 {
+		return fmt.Sprintf("%ds", secs)
+	}
+	if secs < 3600 {
+		return fmt.Sprintf("%dm", secs/60)
+	}
+	return fmt.Sprintf("%dh%dm", secs/3600, (secs%3600)/60)
+}
+
+// narrativeHeuristic builds a plain-English RCA summary without an LLM.
+// It reads from the already-computed candidates, health, and signals.
+func narrativeHeuristic(r RCAResult) string {
+	var parts []string
+	ts := time.Unix(r.IncidentTs/1e9, 0).Local().Format("15:04:05")
+
+	// Opening: what is happening to the focal entity
+	if r.IsMissing {
+		parts = append(parts, fmt.Sprintf("[%s] %s appears to be down — no telemetry received.", ts, r.Entity))
+	} else if r.Health.HasData {
+		switch {
+		case r.Health.ErrorRate > 0.1:
+			parts = append(parts, fmt.Sprintf("[%s] %s is experiencing elevated error rate (%.0f%%, P95 %.0fms, %d spans).",
+				ts, r.Entity, r.Health.ErrorRate*100, r.Health.P95Ms, r.Health.SpanTotal))
+		case r.Health.P95Ms > 0 && r.Baseline.P95Ms > 0 && r.Health.P95Ms > r.Baseline.P95Ms*1.5:
+			parts = append(parts, fmt.Sprintf("[%s] %s showing latency regression: P95 %.0fms vs baseline %.0fms (%.1fx).",
+				ts, r.Entity, r.Health.P95Ms, r.Baseline.P95Ms, r.Health.P95Ms/r.Baseline.P95Ms))
+		case r.Health.CpuUsage > 0.7:
+			parts = append(parts, fmt.Sprintf("[%s] %s under CPU pressure (%.0f%%).", ts, r.Entity, r.Health.CpuUsage*100))
+		default:
+			parts = append(parts, fmt.Sprintf("[%s] Anomaly detected on %s.", ts, r.Entity))
+		}
+	} else {
+		parts = append(parts, fmt.Sprintf("[%s] Anomaly detected on %s (no span data in window).", ts, r.Entity))
+	}
+
+	// Top candidate cause
+	if len(r.CandidateCauses) > 0 {
+		top := r.CandidateCauses[0]
+		var causeStr string
+		switch top.CauseType {
+		case "downstream_error":
+			causeStr = fmt.Sprintf("Likely cause: downstream %s returning errors.", top.EntityID)
+		case "recent_change":
+			causeStr = fmt.Sprintf("Likely cause: recent change on %s.", top.EntityID)
+		case "service_down":
+			causeStr = "Likely cause: service is down or unreachable."
+		case "error_signature":
+			causeStr = fmt.Sprintf("Likely cause: new error pattern (%s).", top.Evidence)
+		case "trace_drift":
+			causeStr = fmt.Sprintf("Likely cause: new call path detected (%s).", top.Evidence)
+		case "self_error":
+			causeStr = fmt.Sprintf("Likely cause: internal errors within %s.", r.Entity)
+		case "self_latency":
+			causeStr = fmt.Sprintf("Likely cause: latency regression within %s.", r.Entity)
+		case "infra_pressure":
+			causeStr = fmt.Sprintf("Likely cause: resource pressure from co-located %s.", top.EntityID)
+		case "upstream_spike":
+			causeStr = fmt.Sprintf("Likely cause: traffic spike from upstream %s.", top.EntityID)
+		default:
+			causeStr = fmt.Sprintf("Likely cause: %s (%s).", top.CauseType, top.EntityID)
+		}
+		if top.Confidence >= 0.7 {
+			causeStr += fmt.Sprintf(" (confidence %.0f%%)", top.Confidence*100)
+		}
+		parts = append(parts, causeStr)
+	}
+
+	// Recent changes
+	if len(r.RecentChanges) > 0 {
+		ch := r.RecentChanges[0]
+		ageSecs := r.IncidentTs/1e9 - ch.Timestamp
+		parts = append(parts, fmt.Sprintf("Change context: %s deployed %s ago.", ch.Description, fmtAgeSecs(ageSecs)))
+	}
+
+	// Degraded dependencies
+	var degradedDown []string
+	for _, n := range r.Downstream {
+		if n.Health.HasData && n.Health.ErrorRate > 0.1 {
+			degradedDown = append(degradedDown, fmt.Sprintf("%s (%.0f%% errors)", n.EntityID, n.Health.ErrorRate*100))
+		}
+	}
+	if len(degradedDown) > 0 {
+		parts = append(parts, "Degraded downstream: "+strings.Join(degradedDown, ", ")+".")
+	}
+
+	// Active anomaly signals summary
+	if len(r.ActiveAnomalies) > 0 {
+		sigSet := make(map[string]struct{})
+		for _, a := range r.ActiveAnomalies {
+			if a.SignalType != "correlated_incident" {
+				sigSet[a.SignalType] = struct{}{}
+			}
+		}
+		if len(sigSet) > 0 {
+			sigs := make([]string, 0, len(sigSet))
+			for s := range sigSet {
+				sigs = append(sigs, s)
+			}
+			sort.Strings(sigs)
+			parts = append(parts, fmt.Sprintf("Active signals: %s.", strings.Join(sigs, ", ")))
+		}
+	}
+
+	if len(parts) == 0 {
+		return fmt.Sprintf("RCA for %s at %s: no significant anomalies detected in window.", r.Entity, ts)
+	}
+	return strings.Join(parts, " ")
 }
 
 func p95(sorted []float64) float64 {

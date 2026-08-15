@@ -8,11 +8,13 @@ We use one MeterProvider shared across all services for metrics.
 import logging
 import os
 import random
+import threading
 import time
 from contextlib import contextmanager
 from typing import Optional
 
 from opentelemetry import trace, metrics
+from opentelemetry import context as otel_context
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
@@ -25,6 +27,19 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExport
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.trace import SpanKind, StatusCode
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+
+# ---------------------------------------------------------------------------
+# Thread-local time offset — used by the baseline seeder to emit spans with
+# past timestamps without real sleeps.  0 = real-time (default).
+# ---------------------------------------------------------------------------
+_span_time_offset = threading.local()
+
+def set_time_offset(seconds: float) -> None:
+    """Set how many seconds in the past new spans should be timestamped."""
+    _span_time_offset.value = seconds
+
+def get_time_offset() -> float:
+    return getattr(_span_time_offset, 'value', 0.0)
 
 logger = logging.getLogger(__name__)
 
@@ -132,24 +147,48 @@ def start_span(
     """
     Simulate a span with a fixed duration + optional jitter.
     Yields the span so callers can add child spans inside the context.
+
+    When a non-zero time offset is active (set via set_time_offset), the span
+    is stamped in the past and emitted instantly with no real sleep — used by
+    the baseline seeder to bootstrap detectors without a real warmup period.
     """
     actual_duration = max(1, duration_ms + random.randint(-jitter_ms, jitter_ms))
     ctx = parent_ctx
+    offset = get_time_offset()
 
-    with tracer.start_as_current_span(name, context=ctx, kind=kind) as span:
-        if attrs:
-            for k, v in attrs.items():
-                span.set_attribute(k, v)
-        if error:
-            span.set_status(StatusCode.ERROR, error_msg)
-            span.record_exception(Exception(error_msg))
+    if offset > 0:
+        # Backfill mode: past timestamps, no real sleep.
+        start_ns = int((time.time() - offset) * 1e9)
+        end_ns = start_ns + int(actual_duration * 1e6)
+        span = tracer.start_span(name, context=ctx, kind=kind, start_time=start_ns)
+        token = otel_context.attach(trace.set_span_in_context(span))
+        try:
+            if attrs:
+                for k, v in attrs.items():
+                    span.set_attribute(k, v)
+            if error:
+                span.set_status(StatusCode.ERROR, error_msg)
+                span.record_exception(Exception(error_msg))
+            yield span
+        finally:
+            span.end(end_time=end_ns)
+            otel_context.detach(token)
+    else:
+        # Real-time mode: original behaviour with sleep-based duration.
+        with tracer.start_as_current_span(name, context=ctx, kind=kind) as span:
+            if attrs:
+                for k, v in attrs.items():
+                    span.set_attribute(k, v)
+            if error:
+                span.set_status(StatusCode.ERROR, error_msg)
+                span.record_exception(Exception(error_msg))
 
-        start = time.time()
-        yield span
-        elapsed_ms = (time.time() - start) * 1000
-        remaining = actual_duration - elapsed_ms
-        if remaining > 0:
-            time.sleep(remaining / 1000)
+            start = time.time()
+            yield span
+            elapsed_ms = (time.time() - start) * 1000
+            remaining = actual_duration - elapsed_ms
+            if remaining > 0:
+                time.sleep(remaining / 1000)
 
 
 def http_attrs(method: str, route: str, status: int, peer: str = "") -> dict:

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -70,6 +71,10 @@ func (b *SQLiteBackend) migrateSchema(ctx context.Context) {
 		`ALTER TABLE eval_results ADD COLUMN completeness          REAL NOT NULL DEFAULT 0`,
 		// Phase 2: sessions.
 		`ALTER TABLE genai_spans ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
+		// Call graph drift: track when each service→service edge was first observed.
+		// NOTE: SQLite ALTER TABLE ADD COLUMN does not allow function-call defaults — use 0.
+		// New rows inserted by RefreshTopology set first_seen_at explicitly via the SELECT.
+		`ALTER TABLE service_topology ADD COLUMN first_seen_at INTEGER DEFAULT 0`,
 	}
 	for _, m := range migrations {
 		b.db.ExecContext(ctx, m) // ignore "duplicate column" errors
@@ -180,9 +185,12 @@ func (b *SQLiteBackend) QuerySpans(ctx context.Context, q SpanQuery) ([]SpanRow,
 	// This prevents high-fan-out traces (e.g. Hibernate N+1) from crowding out other traces.
 	if q.Traces > 0 {
 		where, args := spanWhere(q)
+		// Use the start_ns index to scan at most 20k recent rows first, then
+		// group the small result — avoids full-table GROUP BY on large DBs.
 		traceRows, err := b.db.QueryContext(ctx,
-			`SELECT trace_id FROM spans`+where+
-				` GROUP BY trace_id ORDER BY MAX(start_ns) DESC LIMIT ?`,
+			`SELECT trace_id FROM (
+			    SELECT trace_id, start_ns FROM spans`+where+`ORDER BY start_ns DESC LIMIT 20000
+			 ) GROUP BY trace_id ORDER BY MAX(start_ns) DESC LIMIT ?`,
 			append(args, q.Traces)...,
 		)
 		if err != nil {
@@ -348,16 +356,190 @@ func (b *SQLiteBackend) ClearResolvedAnomalies(ctx context.Context, olderThanNs 
 	return err
 }
 
+func (b *SQLiteBackend) InsertChangeEvent(ctx context.Context, e ChangeEventRow) (int64, error) {
+	if e.Timestamp == 0 {
+		e.Timestamp = time.Now().Unix()
+	}
+	if e.ChangeType == "" {
+		e.ChangeType = "deploy"
+	}
+	res, err := b.db.ExecContext(ctx,
+		`INSERT INTO change_events (entity_id, change_type, description, author, link, timestamp)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		e.EntityID, e.ChangeType, e.Description, e.Author, e.Link, e.Timestamp,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+func (b *SQLiteBackend) QueryChangeEvents(ctx context.Context, entityID string, fromSecs, toSecs int64, lim int) ([]ChangeEventRow, error) {
+	if lim <= 0 {
+		lim = 50
+	}
+	var (
+		q    string
+		args []any
+	)
+	conds := []string{}
+	if entityID != "" {
+		conds = append(conds, "entity_id = ?")
+		args = append(args, entityID)
+	}
+	if fromSecs > 0 {
+		conds = append(conds, "timestamp >= ?")
+		args = append(args, fromSecs)
+	}
+	if toSecs > 0 {
+		conds = append(conds, "timestamp <= ?")
+		args = append(args, toSecs)
+	}
+	q = `SELECT id, entity_id, change_type, description, author, link, timestamp FROM change_events`
+	if len(conds) > 0 {
+		q += ` WHERE ` + strings.Join(conds, " AND ")
+	}
+	q += ` ORDER BY timestamp DESC LIMIT ?`
+	args = append(args, lim)
+
+	rows, err := b.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ChangeEventRow
+	for rows.Next() {
+		var r ChangeEventRow
+		if err := rows.Scan(&r.ID, &r.EntityID, &r.ChangeType, &r.Description, &r.Author, &r.Link, &r.Timestamp); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (b *SQLiteBackend) UpsertIncidentGroup(ctx context.Context, g IncidentGroupRow) error {
+	_, err := b.db.ExecContext(ctx,
+		`INSERT INTO incident_groups
+		    (group_id, root_entity_id, affected_entities, severity, status, signal_types, description, first_seen_ns, last_seen_ns, resolved_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(group_id) DO UPDATE SET
+		    affected_entities = excluded.affected_entities,
+		    severity          = excluded.severity,
+		    status            = excluded.status,
+		    signal_types      = excluded.signal_types,
+		    description       = excluded.description,
+		    last_seen_ns      = excluded.last_seen_ns,
+		    resolved_at       = excluded.resolved_at`,
+		g.GroupID, g.RootEntityID, g.AffectedEntities, g.Severity, g.Status,
+		g.SignalTypes, g.Description, g.FirstSeenNs, g.LastSeenNs, g.ResolvedAt,
+	)
+	return err
+}
+
+func (b *SQLiteBackend) QueryIncidentGroups(ctx context.Context, status string, limit int) ([]IncidentGroupRow, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	// Fetch more rows than needed so we can deduplicate by root entity.
+	fetchLimit := limit * 6
+	var (
+		q    string
+		args []any
+	)
+	if status != "" {
+		q = `SELECT group_id, root_entity_id, affected_entities, severity, status, signal_types, description, first_seen_ns, last_seen_ns, resolved_at
+		     FROM incident_groups WHERE status = ? AND root_entity_id != ''
+		     ORDER BY last_seen_ns DESC LIMIT ?`
+		args = []any{status, fetchLimit}
+	} else {
+		q = `SELECT group_id, root_entity_id, affected_entities, severity, status, signal_types, description, first_seen_ns, last_seen_ns, resolved_at
+		     FROM incident_groups WHERE root_entity_id != ''
+		     ORDER BY last_seen_ns DESC LIMIT ?`
+		args = []any{fetchLimit}
+	}
+	rows, err := b.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var raw []IncidentGroupRow
+	for rows.Next() {
+		var r IncidentGroupRow
+		if err := rows.Scan(&r.GroupID, &r.RootEntityID, &r.AffectedEntities, &r.Severity, &r.Status,
+			&r.SignalTypes, &r.Description, &r.FirstSeenNs, &r.LastSeenNs, &r.ResolvedAt); err != nil {
+			return nil, err
+		}
+		raw = append(raw, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Deduplicate: keep only the most recent group per (root_entity_id, status).
+	// Rows are ORDER BY last_seen_ns DESC so first occurrence wins.
+	type dedupeKey struct{ root, status string }
+	seen := make(map[dedupeKey]bool)
+	out := make([]IncidentGroupRow, 0, limit)
+	for _, r := range raw {
+		k := dedupeKey{r.RootEntityID, r.Status}
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, r)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (b *SQLiteBackend) ResolveStaleIncidentGroups(ctx context.Context, staleSecs int64) error {
+	cutoffNs := (time.Now().Unix()-staleSecs) * 1_000_000_000
+	_, err := b.db.ExecContext(ctx,
+		`UPDATE incident_groups SET status = 'resolved', resolved_at = ?
+		 WHERE status = 'active' AND last_seen_ns < ?`,
+		time.Now().UnixNano(), cutoffNs)
+	return err
+}
+
+func (b *SQLiteBackend) SaveEntitySnapshot(ctx context.Context, s EntitySnapshotRow) error {
+	_, err := b.db.ExecContext(ctx,
+		`INSERT INTO entity_snapshots (entity_id, snapshot_at, health_json, group_id) VALUES (?, ?, ?, ?)`,
+		s.EntityID, s.SnapshotAt, s.HealthJSON, s.GroupID,
+	)
+	return err
+}
+
+func (b *SQLiteBackend) QueryEntitySnapshot(ctx context.Context, entityID string, nearNs int64) (*EntitySnapshotRow, error) {
+	windowNs := int64(15 * 60 * 1_000_000_000)
+	row := b.db.QueryRowContext(ctx,
+		`SELECT id, entity_id, snapshot_at, health_json, group_id FROM entity_snapshots
+		 WHERE entity_id = ? AND snapshot_at BETWEEN ? AND ?
+		 ORDER BY ABS(snapshot_at - ?) LIMIT 1`,
+		entityID, nearNs-windowNs, nearNs+windowNs, nearNs)
+	var s EntitySnapshotRow
+	if err := row.Scan(&s.ID, &s.EntityID, &s.SnapshotAt, &s.HealthJSON, &s.GroupID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &s, nil
+}
+
 func (b *SQLiteBackend) ResetSimulationData(ctx context.Context) error {
+	// Skip spans/metrics/logs — those large tables age out via the retention worker.
+	// Deleting them on a 30GB DB holds the single SQLite connection for minutes,
+	// blocking all HTTP reads. Only clear the small derived-data tables.
 	for _, q := range []string{
-		`DELETE FROM spans`,
-		`DELETE FROM metrics`,
-		`DELETE FROM logs`,
 		`DELETE FROM entities`,
 		`DELETE FROM anomalies`,
 		`DELETE FROM error_signatures`,
 		`DELETE FROM trace_fingerprints`,
 		`DELETE FROM service_topology`,
+		`DELETE FROM incident_groups`,
+		`DELETE FROM entity_snapshots`,
 	} {
 		if _, err := b.db.ExecContext(ctx, q); err != nil {
 			return err
@@ -686,7 +868,7 @@ func (b *SQLiteBackend) UpsertEntities(ctx context.Context, entities []EntityRow
 			INSERT INTO entities (entity_type, entity_id, environment, attrs, last_seen_ns)
 			VALUES (?, ?, ?, ?, ?)
 			ON CONFLICT(entity_type, entity_id) DO UPDATE SET
-				environment  = excluded.environment,
+				environment  = CASE WHEN excluded.environment != '' THEN excluded.environment ELSE entities.environment END,
 				attrs        = excluded.attrs,
 				last_seen_ns = MAX(entities.last_seen_ns, excluded.last_seen_ns)`)
 		if err != nil {
@@ -704,16 +886,18 @@ func (b *SQLiteBackend) UpsertEntities(ctx context.Context, entities []EntityRow
 
 func (b *SQLiteBackend) RefreshTopology(ctx context.Context) error {
 	// Real service-to-service edges derived from parent→child span relationships.
+	// ON CONFLICT: update stats but never overwrite first_seen_at so drift detection works.
 	if _, err := b.db.ExecContext(ctx, `
-		INSERT OR REPLACE INTO service_topology
-			(source_service, target_service, call_count, error_count, avg_duration_ms, updated_at)
+		INSERT INTO service_topology
+			(source_service, target_service, call_count, error_count, avg_duration_ms, updated_at, first_seen_at)
 		SELECT
 			json_extract(parent.resource_attrs, '$."service.name"') AS source_service,
 			json_extract(child.resource_attrs,  '$."service.name"') AS target_service,
 			COUNT(*)                                                 AS call_count,
 			SUM(CASE WHEN child.status_code = 2 THEN 1 ELSE 0 END)  AS error_count,
 			AVG(child.duration_ms)                                   AS avg_duration_ms,
-			unixepoch()                                              AS updated_at
+			unixepoch()                                              AS updated_at,
+			unixepoch()                                              AS first_seen_at
 		FROM spans child
 		JOIN spans parent ON child.parent_span_id = parent.span_id
 		WHERE child.start_ns > (unixepoch() - 3600) * 1000000000
@@ -721,7 +905,12 @@ func (b *SQLiteBackend) RefreshTopology(ctx context.Context) error {
 		  AND json_extract(child.resource_attrs,  '$."service.name"') IS NOT NULL
 		  AND json_extract(parent.resource_attrs, '$."service.name"')
 		   != json_extract(child.resource_attrs,  '$."service.name"')
-		GROUP BY source_service, target_service`); err != nil {
+		GROUP BY source_service, target_service
+		ON CONFLICT(source_service, target_service) DO UPDATE SET
+			call_count      = excluded.call_count,
+			error_count     = excluded.error_count,
+			avg_duration_ms = excluded.avg_duration_ms,
+			updated_at      = excluded.updated_at`); err != nil {
 		return err
 	}
 
@@ -729,9 +918,9 @@ func (b *SQLiteBackend) RefreshTopology(ctx context.Context) error {
 	// have no server-side counterpart (e.g. MySQL, Redis, external APIs).
 	// Only inserted when the target is not already a known instrumented service.
 	_, err := b.db.ExecContext(ctx, `
-		INSERT OR REPLACE INTO service_topology
-			(source_service, target_service, call_count, error_count, avg_duration_ms, updated_at)
-		SELECT src, tgt, COUNT(*), SUM(is_err), AVG(dur), unixepoch()
+		INSERT INTO service_topology
+			(source_service, target_service, call_count, error_count, avg_duration_ms, updated_at, first_seen_at)
+		SELECT src, tgt, COUNT(*), SUM(is_err), AVG(dur), unixepoch(), unixepoch()
 		FROM (
 			SELECT
 				json_extract(s.resource_attrs, '$."service.name"') AS src,
@@ -760,7 +949,18 @@ func (b *SQLiteBackend) RefreshTopology(ctx context.Context) error {
 			  WHERE start_ns > (unixepoch() - 3600) * 1000000000
 				AND json_extract(resource_attrs, '$."service.name"') IS NOT NULL
 		  )
-		GROUP BY src, tgt`)
+		GROUP BY src, tgt
+		ON CONFLICT(source_service, target_service) DO UPDATE SET
+			call_count      = excluded.call_count,
+			error_count     = excluded.error_count,
+			avg_duration_ms = excluded.avg_duration_ms,
+			updated_at      = excluded.updated_at`)
+
+	// Remove stale edges that had no spans in the current refresh window.
+	// These are rows whose updated_at is older than ~90 seconds before now,
+	// meaning RefreshTopology did not touch them in this pass.
+	_, err = b.db.ExecContext(ctx,
+		`DELETE FROM service_topology WHERE updated_at < unixepoch() - 90`)
 	return err
 }
 
@@ -815,7 +1015,7 @@ func (b *SQLiteBackend) QueryEnvironments(ctx context.Context) ([]string, error)
 
 func (b *SQLiteBackend) QueryTopology(ctx context.Context) ([]TopologyEdge, error) {
 	rows, err := b.db.QueryContext(ctx,
-		`SELECT source_service, target_service, call_count, error_count, avg_duration_ms, updated_at
+		`SELECT source_service, target_service, call_count, error_count, avg_duration_ms, updated_at, COALESCE(first_seen_at,0)
 		 FROM service_topology ORDER BY call_count DESC`)
 	if err != nil {
 		return nil, err
@@ -824,10 +1024,53 @@ func (b *SQLiteBackend) QueryTopology(ctx context.Context) ([]TopologyEdge, erro
 	var out []TopologyEdge
 	for rows.Next() {
 		var e TopologyEdge
-		if err := rows.Scan(&e.SourceService, &e.TargetService, &e.CallCount, &e.ErrorCount, &e.AvgDurationMs, &e.UpdatedAt); err != nil {
+		if err := rows.Scan(&e.SourceService, &e.TargetService, &e.CallCount, &e.ErrorCount, &e.AvgDurationMs, &e.UpdatedAt, &e.FirstSeenAt); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (b *SQLiteBackend) QueryNewTopologyEdges(ctx context.Context, sinceSeconds int64) ([]TopologyEdge, error) {
+	cutoff := time.Now().Unix() - sinceSeconds
+	rows, err := b.db.QueryContext(ctx,
+		`SELECT source_service, target_service, call_count, error_count, avg_duration_ms, updated_at, first_seen_at
+		 FROM service_topology WHERE first_seen_at >= ? ORDER BY first_seen_at DESC`,
+		cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TopologyEdge
+	for rows.Next() {
+		var e TopologyEdge
+		if err := rows.Scan(&e.SourceService, &e.TargetService, &e.CallCount, &e.ErrorCount, &e.AvgDurationMs, &e.UpdatedAt, &e.FirstSeenAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (b *SQLiteBackend) QueryRecentAnomaliesByEntity(ctx context.Context, windowSeconds int64) (map[string][]AnomalyRow, error) {
+	cutoff := time.Now().Unix() - windowSeconds
+	rows, err := b.db.QueryContext(ctx,
+		`SELECT entity_id, signal_type, detector_name, metric_name, value, z_score, mean, stddev, algorithm, severity, description, detected_at
+		 FROM anomalies WHERE detected_at >= ? ORDER BY detected_at DESC`,
+		cutoff*1_000_000_000) // detected_at is nanoseconds
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string][]AnomalyRow)
+	for rows.Next() {
+		var a AnomalyRow
+		if err := rows.Scan(&a.EntityID, &a.SignalType, &a.DetectorName, &a.MetricName,
+			&a.Value, &a.Score, &a.Mean, &a.StdDev, &a.Algorithm, &a.Severity, &a.Description, &a.DetectedAt); err != nil {
+			return nil, err
+		}
+		out[a.EntityID] = append(out[a.EntityID], a)
 	}
 	return out, rows.Err()
 }
@@ -930,8 +1173,43 @@ CREATE TABLE IF NOT EXISTS service_topology (
     error_count     INTEGER DEFAULT 0,
     avg_duration_ms REAL    DEFAULT 0,
     updated_at      INTEGER DEFAULT (unixepoch()),
+    first_seen_at   INTEGER DEFAULT 0,
     PRIMARY KEY (source_service, target_service)
 );
+CREATE TABLE IF NOT EXISTS change_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id    TEXT    NOT NULL DEFAULT '',
+    change_type  TEXT    NOT NULL DEFAULT 'deploy',
+    description  TEXT    NOT NULL DEFAULT '',
+    author       TEXT    NOT NULL DEFAULT '',
+    link         TEXT    NOT NULL DEFAULT '',
+    timestamp    INTEGER NOT NULL DEFAULT (unixepoch()),
+    created_at   INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_change_events_entity ON change_events(entity_id, timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_change_events_ts     ON change_events(timestamp DESC);
+CREATE TABLE IF NOT EXISTS incident_groups (
+    group_id          TEXT    PRIMARY KEY,
+    root_entity_id    TEXT    NOT NULL DEFAULT '',
+    affected_entities TEXT    NOT NULL DEFAULT '[]',
+    severity          TEXT    NOT NULL DEFAULT 'warning',
+    status            TEXT    NOT NULL DEFAULT 'active',
+    signal_types      TEXT    NOT NULL DEFAULT '[]',
+    description       TEXT    NOT NULL DEFAULT '',
+    first_seen_ns     INTEGER NOT NULL DEFAULT 0,
+    last_seen_ns      INTEGER NOT NULL DEFAULT 0,
+    resolved_at       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_incident_groups_status ON incident_groups(status, last_seen_ns DESC);
+CREATE TABLE IF NOT EXISTS entity_snapshots (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id   TEXT    NOT NULL,
+    snapshot_at INTEGER NOT NULL,
+    health_json TEXT    NOT NULL DEFAULT '{}',
+    group_id    TEXT    NOT NULL DEFAULT '',
+    created_at  INTEGER DEFAULT (unixepoch())
+);
+CREATE INDEX IF NOT EXISTS idx_entity_snapshots_entity ON entity_snapshots(entity_id, snapshot_at DESC);
 CREATE TABLE IF NOT EXISTS genai_spans (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     trace_id       TEXT    NOT NULL,

@@ -305,6 +305,37 @@ func (b *ClickHouseBackend) QueryEnvironments(_ context.Context) ([]string, erro
 func (b *ClickHouseBackend) QueryTopology(_ context.Context) ([]TopologyEdge, error) {
 	return nil, nil
 }
+func (b *ClickHouseBackend) QueryNewTopologyEdges(_ context.Context, _ int64) ([]TopologyEdge, error) {
+	return nil, nil
+}
+func (b *ClickHouseBackend) QueryRecentAnomaliesByEntity(_ context.Context, _ int64) (map[string][]AnomalyRow, error) {
+	return nil, nil
+}
+
+// Change records — stubs for ClickHouse (SQLite-only for now).
+func (b *ClickHouseBackend) InsertChangeEvent(_ context.Context, _ ChangeEventRow) (int64, error) {
+	return 0, nil
+}
+func (b *ClickHouseBackend) QueryChangeEvents(_ context.Context, _ string, _, _ int64, _ int) ([]ChangeEventRow, error) {
+	return nil, nil
+}
+
+// Incident groups — stubs for ClickHouse.
+func (b *ClickHouseBackend) UpsertIncidentGroup(_ context.Context, _ IncidentGroupRow) error {
+	return nil
+}
+func (b *ClickHouseBackend) QueryIncidentGroups(_ context.Context, _ string, _ int) ([]IncidentGroupRow, error) {
+	return nil, nil
+}
+func (b *ClickHouseBackend) ResolveStaleIncidentGroups(_ context.Context, _ int64) error { return nil }
+
+// Entity snapshots — stubs for ClickHouse.
+func (b *ClickHouseBackend) SaveEntitySnapshot(_ context.Context, _ EntitySnapshotRow) error {
+	return nil
+}
+func (b *ClickHouseBackend) QueryEntitySnapshot(_ context.Context, _ string, _ int64) (*EntitySnapshotRow, error) {
+	return nil, nil
+}
 
 // Fingerprint / error signature — stubs for ClickHouse (SQLite-only for now).
 func (b *ClickHouseBackend) FlushAnomalies(_ context.Context, _ []AnomalyRow) error { return nil }

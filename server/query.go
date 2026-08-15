@@ -14,6 +14,11 @@ import (
 	"github.com/yourorg/otel-backend/storage"
 )
 
+// changeTypes is the allowed set for validation.
+var changeTypes = map[string]bool{
+	"deploy": true, "config": true, "rollback": true, "manual": true,
+}
+
 // NewQueryServer returns an http.Handler for the read API:
 //
 //	GET /v1/query/spans?trace_id=&name=&service=&from=&to=&limit=
@@ -38,6 +43,8 @@ func NewQueryServer(store *storage.Storage, ew *ExperimentWorker, logger *zap.Lo
 	mux.HandleFunc("/v1/rca", s.rca)
 	mux.HandleFunc("/v1/incidents", s.incidents)
 	mux.HandleFunc("/v1/incidents/clear", s.clearIncidents)
+	mux.HandleFunc("/v1/incident-groups", s.incidentGroups)
+	mux.HandleFunc("/v1/changes", s.changes)
 	// GenAI observability routes
 	registerGenAIRoutes(mux, store, ew, logger)
 	// Scenario simulation routes (remove registerScenarioRoutes + server/scenarios.go to disable)
@@ -216,16 +223,19 @@ type IncidentOut struct {
 }
 
 // resolvedThresholdNs — incident is resolved if latest anomaly is older than this.
-const resolvedThresholdNs = int64(30 * 1e9) // 30 seconds
+const resolvedThresholdNs = int64(30 * 60 * 1e9) // 30 minutes
 
 // signalPriority maps signal types to priority scores for incident ranking.
 var signalPriority = map[string]int{
-	"missing_service": 6,
-	"error_signature": 5,
-	"span_error_rate": 4,
-	"trace_drift":     3,
-	"span_latency":    2,
-	"metric":          1,
+	"missing_service":    6,
+	"error_signature":    5,
+	"correlated_incident": 5,
+	"span_error_rate":    4,
+	"trace_drift":        3,
+	"callgraph_drift":    3,
+	"span_latency":       2,
+	"genai_latency_drift": 2,
+	"metric":             1,
 }
 
 func (s *queryServer) incidents(w http.ResponseWriter, r *http.Request) {
@@ -236,7 +246,10 @@ func (s *queryServer) incidents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	const bucketSecs int64 = 30 * 60
+	// 30-minute bucket in nanoseconds (DetectedAt is UnixNano).
+	const bucketNs int64 = 30 * 60 * 1_000_000_000
+	// Only consider anomalies from the last 60 minutes for active incident detection.
+	windowNs := time.Now().UnixNano() - 60*60*1_000_000_000
 
 	type incKey struct {
 		entityID string
@@ -253,10 +266,10 @@ func (s *queryServer) incidents(w http.ResponseWriter, r *http.Request) {
 
 	inc := map[incKey]*incData{}
 	for _, row := range rows {
-		if row.EntityID == "" {
+		if row.EntityID == "" || row.DetectedAt < windowNs {
 			continue
 		}
-		bucket := (row.DetectedAt / bucketSecs) * bucketSecs
+		bucket := (row.DetectedAt / bucketNs) * bucketNs
 		k := incKey{row.EntityID, bucket}
 		d, ok := inc[k]
 		if !ok {
@@ -283,9 +296,18 @@ func (s *queryServer) incidents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// By default suppress metric-only warning incidents (high-volume noise).
+	// Pass ?all=true to include everything.
+	importantOnly := r.URL.Query().Get("all") != "true"
+
 	nowNs := time.Now().UnixNano()
 	out := make([]IncidentOut, 0, len(inc))
 	for k, d := range inc {
+		// Skip metric-only incidents in default (important) mode regardless of severity.
+		// Metric anomalies alone are not actionable enough to show by default.
+		if importantOnly && d.priority <= 1 {
+			continue
+		}
 		out = append(out, IncidentOut{
 			EntityID:     k.entityID,
 			BucketTs:     k.bucket,
@@ -340,6 +362,8 @@ func writeJSON(w http.ResponseWriter, data any, err error, logger *zap.Logger) {
 	case []storage.EntityRow:
 		count = len(v)
 	case []storage.TopologyEdge:
+		count = len(v)
+	case []storage.ChangeEventRow:
 		count = len(v)
 	}
 
@@ -460,6 +484,52 @@ func absInt64(n int64) int64 {
 	return n
 }
 
+// changes handles POST (ingest) and GET (query) for change records.
+//
+//	POST /v1/changes  body: {"entity_id","change_type","description","author","link","timestamp"}
+//	GET  /v1/changes?entity=&from=&to=&limit=
+func (s *queryServer) changes(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		var e storage.ChangeEventRow
+		if err := json.NewDecoder(r.Body).Decode(&e); err != nil {
+			http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if e.EntityID == "" {
+			http.Error(w, "entity_id is required", http.StatusBadRequest)
+			return
+		}
+		if e.Description == "" {
+			http.Error(w, "description is required", http.StatusBadRequest)
+			return
+		}
+		if e.ChangeType != "" && !changeTypes[e.ChangeType] {
+			http.Error(w, "change_type must be one of: deploy, config, rollback, manual", http.StatusBadRequest)
+			return
+		}
+		id, err := s.store.InsertChangeEvent(r.Context(), e)
+		if err != nil {
+			s.logger.Error("insert change event", zap.Error(err))
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"id": id, "status": "ok"})
+
+	case http.MethodGet:
+		entityID := r.URL.Query().Get("entity")
+		fromSecs := parseInt64(r.URL.Query().Get("from"))
+		toSecs := parseInt64(r.URL.Query().Get("to"))
+		lim := parseInt(r.URL.Query().Get("limit"))
+		rows, err := s.store.QueryChangeEvents(r.Context(), entityID, fromSecs, toSecs, lim)
+		writeJSON(w, rows, err, s.logger)
+
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 func (s *queryServer) clearIncidents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete && r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -473,6 +543,31 @@ func (s *queryServer) clearIncidents(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *queryServer) incidentGroups(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	status := r.URL.Query().Get("status") // "active" | "resolved" | "" (all)
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	groups, err := s.store.QueryIncidentGroups(r.Context(), status, limit)
+	if err != nil {
+		s.logger.Error("query incident groups", zap.Error(err))
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if groups == nil {
+		groups = []storage.IncidentGroupRow{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"groups": groups, "count": len(groups)})
 }
 
 // entityK8sAttrs looks up a service entity and returns its k8s resource attributes

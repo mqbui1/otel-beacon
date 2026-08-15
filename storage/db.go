@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -90,6 +91,10 @@ type Storage struct {
 	lastSeenRootSvc map[string]time.Time // rootSvc -> last observed time
 	missingEmitted  map[string]bool      // rootSvc -> true if alert already fired this absence
 
+	// Call-graph drift detection: remember which edges we have already fired for.
+	driftMu      sync.Mutex
+	driftEmitted map[string]bool // "src→tgt" -> true if callgraph_drift already fired
+
 	// Prometheus metrics
 	received  *prometheus.CounterVec
 	dropped   *prometheus.CounterVec
@@ -121,6 +126,7 @@ func New(backend Backend, opts ...Option) *Storage {
 		promReg:         prometheus.DefaultRegisterer,
 		lastSeenRootSvc: make(map[string]time.Time),
 		missingEmitted:  make(map[string]bool),
+		driftEmitted:    make(map[string]bool),
 	}
 	for _, o := range opts {
 		o(s)
@@ -156,11 +162,12 @@ func (s *Storage) Init(ctx context.Context) error {
 		s.wg.Add(1)
 		go s.retentionWorker()
 	}
-	s.wg.Add(4)
+	s.wg.Add(5)
 	go s.topologyWorker()
 	go s.fingerprintWorker()
 	go s.errorSignatureWorker()
 	go s.spanRateWorker()
+	go s.callGraphDriftWorker()
 	// missingServiceWorker disabled: server/missing_svc_checker.go handles this
 	// with a faster 45s threshold and upsert deduplication.
 	return nil
@@ -204,6 +211,10 @@ func (s *Storage) FlushAnomalies(ctx context.Context, rows []AnomalyRow) error {
 	return s.backend.FlushAnomalies(ctx, rows)
 }
 
+func (s *Storage) QueryRecentAnomaliesByEntity(ctx context.Context, windowSeconds int64) (map[string][]AnomalyRow, error) {
+	return s.backend.QueryRecentAnomaliesByEntity(ctx, windowSeconds)
+}
+
 func (s *Storage) DeleteMissingServiceAnomaly(ctx context.Context, entityID string) error {
 	return s.backend.DeleteMissingServiceAnomaly(ctx, entityID)
 }
@@ -212,8 +223,42 @@ func (s *Storage) ClearResolvedAnomalies(ctx context.Context, olderThanNs int64)
 	return s.backend.ClearResolvedAnomalies(ctx, olderThanNs)
 }
 
+// scenarioInjectedTargets are services that scenarios inject as NEW dependencies
+// (i.e. the anomaly IS the new edge). Only edges pointing TO these targets are
+// cleared on reset so the callgraph_drift can re-fire on repeated runs.
+// Clearing edges FROM shared service names (checkout, payment…) would also clear
+// real astronomy-shop edges and flood the map with spurious drift alerts.
+var scenarioInjectedTargets = map[string]bool{
+	"audit-service": true, // new_call_path: injected new dependency
+	"accounting":    true, // payment_timeout: external payment target
+}
+
 func (s *Storage) ResetSimulationData(ctx context.Context) error {
-	return s.backend.ResetSimulationData(ctx)
+	if err := s.backend.ResetSimulationData(ctx); err != nil {
+		return err
+	}
+	// Only clear edges whose TARGET is a scenario-injected service so the
+	// callgraph_drift re-fires on repeated runs without flooding real edges.
+	s.driftMu.Lock()
+	for key := range s.driftEmitted {
+		if _, tgt, ok := strings.Cut(key, "→"); ok && scenarioInjectedTargets[tgt] {
+			delete(s.driftEmitted, key)
+		}
+	}
+	s.driftMu.Unlock()
+	return nil
+}
+
+func (s *Storage) RefreshTopology(ctx context.Context) error {
+	return s.backend.RefreshTopology(ctx)
+}
+
+// RefreshTopologyAndDetectDrift immediately refreshes service topology and runs
+// the callgraph_drift detector. Call this when a scenario starts so new edges
+// are detected within seconds rather than waiting for the next 30s tick.
+func (s *Storage) RefreshTopologyAndDetectDrift(ctx context.Context) {
+	_ = s.backend.RefreshTopology(ctx)
+	s.detectCallGraphDrift()
 }
 
 func (s *Storage) QueryEntities(ctx context.Context, entityType, env string) ([]EntityRow, error) {
@@ -513,7 +558,7 @@ func (s *Storage) topologyWorker() {
 	if err := s.backend.RefreshTopology(s.ctx); err != nil {
 		s.onError(fmt.Errorf("refresh topology: %w", err))
 	}
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
 	for {
 		select {
@@ -523,6 +568,88 @@ func (s *Storage) topologyWorker() {
 			}
 		case <-s.ctx.Done():
 			return
+		}
+	}
+}
+
+// callGraphDriftWorker fires a callgraph_drift anomaly the first time a new
+// service→service edge is observed in the topology.  It runs every 30 seconds
+// and remembers which edges it has already alerted on in memory so it never
+// fires twice for the same edge.
+func (s *Storage) callGraphDriftWorker() {
+	defer s.wg.Done()
+	// Wait briefly so topologyWorker's initial refresh completes before we
+	// bootstrap driftEmitted. Without this, a reset+restart leaves service_topology
+	// empty at bootstrap time, causing every edge to appear "new" on the next tick.
+	select {
+	case <-time.After(5 * time.Second):
+	case <-s.ctx.Done():
+		return
+	}
+	// Pre-populate driftEmitted from all existing topology edges so that a
+	// container restart (including after a reset) does not re-fire callgraph_drift
+	// for edges that are already in the topology at startup.
+	// scenarioInjectedTargets edges are only cleared by an explicit reset, not restart.
+	if edges, err := s.backend.QueryTopology(s.ctx); err == nil {
+		s.driftMu.Lock()
+		for _, e := range edges {
+			s.driftEmitted[e.SourceService+"→"+e.TargetService] = true
+		}
+		s.driftMu.Unlock()
+	}
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.detectCallGraphDrift()
+		case <-s.ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *Storage) detectCallGraphDrift() {
+	// Look for edges first seen within the last 3 minutes (slightly wider than the
+	// 2-minute tick interval to tolerate timing jitter).
+	newEdges, err := s.backend.QueryNewTopologyEdges(s.ctx, 180)
+	if err != nil {
+		s.onError(fmt.Errorf("callgraph drift query: %w", err))
+		return
+	}
+
+	var anomalies []AnomalyRow
+	now := time.Now().UnixNano()
+
+	s.driftMu.Lock()
+	for _, e := range newEdges {
+		key := e.SourceService + "→" + e.TargetService
+		if s.driftEmitted[key] {
+			continue
+		}
+		s.driftEmitted[key] = true
+		anomalies = append(anomalies, AnomalyRow{
+			EntityID:     e.SourceService,
+			SignalType:   "callgraph_drift",
+			DetectorName: "call_graph_drift",
+			MetricName:   "new_topology_edge",
+			Value:        float64(e.CallCount),
+			Score:        1.0,
+			Algorithm:    "structural",
+			Severity:     "warning",
+			Description:  fmt.Sprintf("New call path detected: %s → %s (first seen, %d calls)", e.SourceService, e.TargetService, e.CallCount),
+			DetectedAt:   now,
+		})
+	}
+	s.driftMu.Unlock()
+
+	if len(anomalies) > 0 {
+		if err := s.backend.FlushAnomalies(s.ctx, anomalies); err != nil {
+			s.onError(fmt.Errorf("callgraph drift flush: %w", err))
+			return
+		}
+		for _, a := range anomalies {
+			s.onAnomaly(a)
 		}
 	}
 }
